@@ -330,15 +330,20 @@ const MallCore = (() => {
     const fixtures = [];
     for (let u = 0; u < SW; u++) fixtures.push({ u, v: 0, kind: 'wall' });                 // back-wall shelving
     for (let u = 1; u <= 4; u++) fixtures.push({ u, v: 2, kind: 'islandA' });             // island A
-    for (let u = 1; u <= 3; u++) fixtures.push({ u, v: 4, kind: 'islandB' });             // island B
+    for (let u = 0; u <= 1; u++) fixtures.push({ u, v: 4, kind: 'islandB' });             // island B (left half, so the u2 aisle and the u3 lane run straight)
     for (let v = 5; v <= 8; v++) fixtures.push({ u: 5, v, kind: 'counter' });             // checkout counter
     for (const [u, v] of [[0, 6], [1, 6], [0, 7], [1, 7]]) fixtures.push({ u, v, kind: 'table' }); // display table
-    const browse1 = [[1, 3], [2, 3], [3, 3], [4, 3], [1, 5], [2, 5], [2, 6], [2, 7]];        // tier 1 sales floor (front 70%)
+    const browse1 = [[0, 3], [1, 3], [0, 5], [1, 5], [2, 6], [2, 7], [0, 8], [1, 8]];        // tier 1 sales floor (front 70%): every spot beside a fixture, left of the checkout lane
     const browse2 = browse1.concat([[0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [5, 1]]);        // tier 2+: full depth
     const tills = []; for (let i = 0; i < 6; i++) tills.push([4.5, 8.5 - i * 0.62]);         // customer side of the counter (continuous local coords); register 1 at the front end, by the doorway
-    const queue = [[3.5, 7.9], [3.5, 7.3], [3.5, 6.7], [3.5, 6.1], [3.5, 5.5],             // checkout line inside, roped off: front by the first register, tail running back into the store, doorway clear
-      [2.9, 5.2], [2.3, 5.2], [1.7, 5.2], [1.1, 5.2], [0.5, 5.2]];                         // …then it snakes left along the row in front of island B (v 5), clear of the browse-spot centres
-    return { fixtures, browse1, browse2, tills, queue, doorU: [2, 3] };
+    // checkout lane: its own roped column (u 3, v 3–7) beside the registers. Front by register 1, tail up by island A.
+    // Shoppers join only at the tail (from the u2 aisle at v 3) and leave the front straight to the registers (u 4, v 5–8),
+    // so nobody walking in, browsing or walking out ever passes through the line.
+    const queue = []; for (let i = 0; i < 10; i++) queue.push([3.5, Math.round((7.9 - 0.51 * i) * 100) / 100]);   // 7.9 … 3.31 (the tail stays clear of the tier-1 stockroom partition at v 3.09)
+    const lane = [], tillZone = []; for (let v = 3; v <= 7; v++) lane.push([3, v]); for (let v = 5; v <= 8; v++) tillZone.push([4, v]);
+    // zone gates (local tiles): tail = the only way into the lane; front = lane → registers; tillIn = the register aisle's bottom openings
+    const gates = { tail: [[[2, 3], [3, 3]]], front: [[[3, 7], [4, 7]]], tillIn: [[[3, 8], [4, 8]], [[4, 9], [4, 8]]] };
+    return { fixtures, browse1, browse2, tills, queue, lane, tillZone, gates, doorU: [2, 3] };
   })();
   const FRAME = { down: { U: [1, 0], V: [0, 1] }, up: { U: [-1, 0], V: [0, -1] }, right: { U: [0, -1], V: [1, 0] }, left: { U: [0, 1], V: [-1, 0] } };
   function frameOrigin(face, x0, y0) { return face === 'down' ? [x0, y0] : face === 'up' ? [x0 + SW, y0 + SD] : face === 'right' ? [x0, y0 + SW] : [x0 + SD, y0]; }
@@ -347,10 +352,36 @@ const MallCore = (() => {
   function toLocal(sl, wx, wy) { const F = FRAME[sl.face], dx = wx - sl.o[0], dy = wy - sl.o[1]; return { lx: dx * F.U[0] + dy * F.U[1], ly: dx * F.V[0] + dy * F.V[1] }; }
   const localTile = (sl, u, v) => { const p = toWorld(sl, u + 0.5, v + 0.5); return { x: Math.floor(p.x), y: Math.floor(p.y) }; };
   const localSpot = (sl, lx, ly) => { const p = toWorld(sl, lx, ly); return { x: p.x - 0.5, y: p.y - 0.5 }; };  // shopper coords: integer = tile centre
+  // the line outside a full store: out of the doorway one tile, then along the hall wall (the two wall-side rows of the hall
+  // are always free of decor), as a polyline in shopper coords; spots are 0.5 tiles apart along it
+  function doorLine(L, sl) {
+    const d = OUT[sl.face], a0 = [Math.abs(d[1]), Math.abs(d[0])], h = L.hall, d0 = sl.door, d1 = { x: d0.x + d[0], y: d0.y + d[1] };
+    const inHall = (x, y) => x >= h.x0 && y >= h.y0 && x < h.x1 && y < h.y1 && L.tiles[y * L.W + x] === 0;
+    const run = sg => { let n = 0; while (inHall(d1.x + a0[0] * sg * (n + 1), d1.y + a0[1] * sg * (n + 1))) n++; return n; };
+    const sg = run(1) >= run(-1) ? 1 : -1, n = run(sg), a = [a0[0] * sg, a0[1] * sg];
+    const pts = [{ x: d0.x, y: d0.y }, d1, { x: d1.x + a[0] * n, y: d1.y + a[1] * n }];
+    const back = Math.max(0, n - 2); if (back > 0) pts.push({ x: d0.x + a[0] * n, y: d0.y + a[1] * n }, { x: d0.x + a[0] * (n - back), y: d0.y + a[1] * (n - back) });   // very long lines fold back along the wall
+    return pts;
+  }
+  function alongLine(pts, dist) {
+    for (let k = 0; k + 1 < pts.length; k++) { const p = pts[k], q = pts[k + 1], len = Math.hypot(q.x - p.x, q.y - p.y); if (dist <= len) return { x: p.x + (q.x - p.x) * dist / (len || 1), y: p.y + (q.y - p.y) * dist / (len || 1) }; dist -= len; }
+    return { ...pts[pts.length - 1] };
+  }
+  // hall decor footprints (tile-edge coords): the fountain basin, tree canopies, benches. clearOfDecor = a shopper's body stays off them
+  function decorHit(L, wx, wy, pad) {
+    for (const d of L.decor) {
+      if (wx < d.x - 1.5 || wy < d.y - 1.5 || wx > d.x + d.w + 1.5 || wy > d.y + d.h + 1.5) continue;
+      if (d.kind === 'fountain') { if (Math.hypot(wx - d.x - 1, wy - d.y - 1) < 0.92 + pad) return d; }
+      else if (d.kind === 'tree') { if (Math.hypot(wx - d.x - 0.5, wy - d.y - 0.5) < 13 / 32 + pad) return d; }
+      else { const dx = Math.max(d.x + 3 / 32 - wx, 0, wx - d.x - 29 / 32), dy = Math.max(d.y - wy, 0, wy - d.y - 24 / 32); if (Math.hypot(dx, dy) < pad || (dx === 0 && dy === 0)) return d; }
+    }
+    return null;
+  }
   function getLayout(level) {
     if (layoutCache[level]) return layoutCache[level];
     const { a, bl, br, c } = LEVELS[level - 1], iw = SW * a, ih = SW * Math.max(bl, br), bottomD = c > 0 ? SD : 1, W = iw + 2 * SD, H = SD + ih + bottomD, N = W * H;
     const tiles = new Uint8Array(N).fill(2);   // 0 hall walkway, 3 store floor, 2 wall/fixture/decor (blocked)
+    const zone = new Int8Array(N), gates = new Map();   // store floor zones: 1 checkout lane, 2 register aisle; gates: tile pair → 'tail' | 'front' | 'tillIn'
     const reg = new Int16Array(N).fill(-2);    // -1 hall, i = store room i
     const doorEdges = new Set();
     const hall = { x0: SD, y0: SD, x1: SD + iw, y1: SD + ih };
@@ -363,6 +394,9 @@ const MallCore = (() => {
       sl.o = frameOrigin(face, x0, y0); sl.cx = x0 + sl.w / 2; sl.cy = y0 + sl.h / 2;
       for (let y = y0; y < y0 + sl.h; y++) for (let x = x0; x < x0 + sl.w; x++) { tiles[y * W + x] = 3; reg[y * W + x] = idx; }
       for (const f of ROOM.fixtures) { const t = localTile(sl, f.u, f.v); tiles[t.y * W + t.x] = 2; }
+      for (const [u, v] of ROOM.lane) { const t = localTile(sl, u, v); zone[t.y * W + t.x] = 1; }
+      for (const [u, v] of ROOM.tillZone) { const t = localTile(sl, u, v); zone[t.y * W + t.x] = 2; }
+      for (const k in ROOM.gates) for (const [a, b] of ROOM.gates[k]) { const ta = localTile(sl, a[0], a[1]), tb = localTile(sl, b[0], b[1]), ia = ta.y * W + ta.x, ib = tb.y * W + tb.x; gates.set(ia * N + ib, k); gates.set(ib * N + ia, k); }
       const out = OUT[face];
       for (const u of ROOM.doorU) { const t = localTile(sl, u, SD - 1), i1 = t.y * W + t.x, i2 = (t.y + out[1]) * W + t.x + out[0]; doorEdges.add(i1 * N + i2); doorEdges.add(i2 * N + i1); }
       const din = localTile(sl, ROOM.doorU[0], SD - 1);
@@ -386,7 +420,8 @@ const MallCore = (() => {
       if (tiles[y * W + x] === 0) put((x + y) % 2 ? 'bench' : 'tree', x, y, 1, 1);
     }
     const entrance = { x: gx0 + 1, y: H - 1 };
-    const L = { level, W, H, N, iw, ih, tiles, reg, doorEdges, slots, decor, entrance, gap, gx0, hall, bottomD };
+    const L = { level, W, H, N, iw, ih, tiles, reg, doorEdges, slots, decor, entrance, gap, gx0, hall, bottomD, zone, gates };
+    for (const sl of slots) sl.doorLine = doorLine(L, sl);
     layoutCache[level] = L;
     return L;
   }
@@ -406,16 +441,31 @@ const MallCore = (() => {
   function doorOfStore(game, store) { return slotByKey(layoutOf(game), store.slot).door; }
   const isFixture = (L, x, y) => x >= 0 && y >= 0 && x < L.W && y < L.H && L.tiles[y * L.W + x] === 2;
 
-  /* ---------- BFS pathfinding on the tile grid (room walls are only crossable at doorways) ---------- */
-  function bfs(L, sx, sy) {
+  /* ---------- BFS pathfinding on the tile grid (room walls are only crossable at doorways) ----------
+     Fixtures, walls and hall decor are blocked tiles, so every path runs through open tile centres.
+     Inside a store the checkout lane (zone 1) and the register aisle (zone 2) are fenced off by mode:
+       'free' (walking in, browsing, walking out): neither zone; a shopper standing in one may step out of it
+       'line' (joining / moving up the checkout line): the lane, entered only at its tail
+       'till' (going to a register): the register aisle, entered from its bottom openings or from the lane's front */
+  function zoneStepOk(L, cur, n, s0, mode) {
+    const zc = L.zone[cur], zn = L.zone[n];
+    if (zc === 0 && zn === 0) return true;
+    const gate = L.gates.get(cur * L.N + n);
+    if (zc === zn) return zn === 1 ? mode === 'line' : (mode === 'till' || L.zone[s0] === 2);
+    if (zn === 1) return mode === 'line' && gate === 'tail' && zc === 0;
+    if (zc === 1) return zn === 0 ? cur === s0 && mode !== 'line' : mode === 'till' && gate === 'front';
+    if (zn === 2) return mode === 'till' && gate === 'tillIn';
+    return gate === 'tillIn';   // out of the register aisle through its bottom openings
+  }
+  function bfs(L, sx, sy, mode = 'free') {
     const prev = new Int32Array(L.N).fill(-2);
     if (!walkable(L, sx, sy)) return prev;
-    const q = [sy * L.W + sx]; prev[q[0]] = -1;
+    const s0 = sy * L.W + sx, q = [s0]; prev[s0] = -1;
     for (let i = 0; i < q.length; i++) {
       const cur = q[i], cx = cur % L.W, cy = (cur / L.W) | 0, rc = L.reg[cur];
       for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
         const nx = cx + dx, ny = cy + dy, n = ny * L.W + nx;
-        if (walkable(L, nx, ny) && prev[n] === -2 && (L.reg[n] === rc || L.doorEdges.has(cur * L.N + n))) { prev[n] = cur; q.push(n); }
+        if (walkable(L, nx, ny) && prev[n] === -2 && (L.reg[n] === rc || L.doorEdges.has(cur * L.N + n)) && zoneStepOk(L, cur, n, s0, mode)) { prev[n] = cur; q.push(n); }
       }
     }
     return prev;
@@ -426,7 +476,13 @@ const MallCore = (() => {
     while (cur !== -1) { path.push({ x: cur % L.W, y: (cur / L.W) | 0 }); cur = prev[cur]; }
     return path.reverse();
   }
-  const findPath = (L, sx, sy, gx, gy) => reconstruct(L, bfs(L, sx, sy), gx, gy);
+  // paths are cached per layout, start, goal and mode (layouts never change once built)
+  function findPath(L, sx, sy, gx, gy, mode = 'free') {
+    const c = L.pathCache || (L.pathCache = new Map()), key = ((sy * L.W + sx) * L.N + gy * L.W + gx) * 3 + (mode === 'line' ? 1 : mode === 'till' ? 2 : 0);
+    let p = c.get(key);
+    if (p === undefined) { p = reconstruct(L, bfs(L, sx, sy, mode), gx, gy); if (c.size > 20000) c.clear(); c.set(key, p); }
+    return p && p.map(n => ({ x: n.x, y: n.y }));
+  }
 
   /* ---------- formulas ---------- */
   const upgradeCost = (game, key) => { const u = UPGRADES[key]; return Math.floor(u.base * Math.pow(u.growth, game.upgrades[key]) * costMult(game.prestige)); };
@@ -525,9 +581,12 @@ const MallCore = (() => {
     return nearestWalkable(L, Math.round(s.x), Math.round(s.y), sl ? sl.idx : -1);
   }
   // path over the grid from the shopper's tile to a tile, optionally finishing on an exact (sub-tile) point
-  function routeTo(game, s, gx, gy, exact) {
-    const L = layoutOf(game), t = tileOf(s, L, game), p = findPath(L, t.x, t.y, gx, gy) || [{ x: gx, y: gy }];
-    if (exact) p.push(exact);
+  // (no doubling back: a first node behind the shopper or a last tile centre past the exact point is dropped)
+  const onSeg = (p, a, b) => Math.abs((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) < 1e-6 && (p.x - a.x) * (p.x - b.x) + (p.y - a.y) * (p.y - b.y) <= 1e-9;
+  function routeTo(game, s, gx, gy, exact, mode) {
+    const L = layoutOf(game), t = tileOf(s, L, game), p = findPath(L, t.x, t.y, gx, gy, mode) || [{ x: gx, y: gy }];
+    if (p.length >= 2 && onSeg(s, p[0], p[1])) p.shift();
+    if (exact) { if (p.length >= 2 && onSeg(exact, p[p.length - 2], p[p.length - 1])) p.pop(); p.push(exact); }
     s.path = p;
   }
   function startLeaving(game, s, outcome) {
@@ -586,7 +645,7 @@ const MallCore = (() => {
     const used = new Set(game.shoppers.filter(o => o.inStore === store.id && o.till != null).map(o => o.till));
     let i = 0; while (used.has(i)) i++;
     const sl = slotOf(game, store), p = sl.tills[i];
-    s.till = i; s.spot = null; s.state = 'toTill'; routeTo(game, s, Math.round(p.x), Math.round(p.y), p);
+    s.till = i; s.spot = null; s.state = 'toTill'; routeTo(game, s, Math.round(p.x), Math.round(p.y), p, 'till');
   }
   const waitingLine = (game, store) => game.shoppers.filter(o => o.inStore === store.id && o.state === 'waitTill').sort((a, b) => a.waitT - b.waitT || a.id - b.id);
   // waited too long in a checkout line: drop that want, walk out (annoyed) and try the rest of the list
@@ -634,11 +693,11 @@ const MallCore = (() => {
     if (d > 1e-6) turnToward(s, Math.atan2(dy, dx), dt);
     return done;
   }
-  // queue spot: outside the door, stepping back into the hall
+  // queue spot: outside the door, then along the hall wall (sl.doorLine), 0.5 tiles apart; never into the fountain, trees or benches
   function queueSpot(game, s, store) {
-    const sl = slotOf(game, store), d = OUT[sl.face];
+    const sl = slotOf(game, store);
     const q = game.shoppers.filter(o => o.state === 'queue' && o.target === store.id), i = Math.max(0, q.indexOf(s));
-    return { x: sl.door.x + d[0] * 0.5 * i + (d[1] !== 0 ? (i % 2 ? 0.3 : -0.3) * (i > 0) : 0), y: sl.door.y + d[1] * 0.5 * i + (d[0] !== 0 ? (i % 2 ? 0.3 : -0.3) * (i > 0) : 0) };
+    return alongLine(sl.doorLine, 0.5 * i);
   }
   const SEP_R = 0.42, SEP_MAX = 0.3;
   function separate(game, dt) {
@@ -652,7 +711,11 @@ const MallCore = (() => {
       a.ox += dx / d * push; a.oy += dy / d * push; b.ox -= dx / d * push; b.oy -= dy / d * push;
     }
     const k = Math.max(0, 1 - dt * 0.8);
-    for (const s of game.shoppers) { if (s.inStore != null) { s.ox *= 0.8; s.oy *= 0.8; } s.ox *= k; s.oy *= k; const m = Math.hypot(s.ox, s.oy); if (m > SEP_MAX) { s.ox *= SEP_MAX / m; s.oy *= SEP_MAX / m; } }
+    const L = layoutOf(game);
+    for (const s of game.shoppers) { if (s.inStore != null) { s.ox *= 0.8; s.oy *= 0.8; } s.ox *= k; s.oy *= k; const m = Math.hypot(s.ox, s.oy); if (m > SEP_MAX) { s.ox *= SEP_MAX / m; s.oy *= SEP_MAX / m; }
+      // a nudge never pushes a body into the fountain, a tree or a bench: shrink it until clear
+      if (s.inStore == null && (s.ox || s.oy)) for (let k = 0; k < 5 && decorHit(L, s.x + s.ox + 0.5, s.y + s.oy + 0.5, DOT_R); k++) { const f = k < 4 ? 0.6 : 0; s.ox *= f; s.oy *= f; }
+    }
   }
   function update(game, dt) {
     dt = Math.min(dt, 0.25);
@@ -687,7 +750,10 @@ const MallCore = (() => {
         const line = waitingLine(game, st), i = line.indexOf(s);
         if (i === 0 && tillsBusy(game, st) < capacityOf(st)) { goToTill(game, s, st); continue; }
         if (s.qi !== i) { s.qi = i; const sl = slotOf(game, st), p = sl.queue[i];   // past the last line spot: wait where you stand (no stacking) until a spot frees up
-          if (p) routeTo(game, s, Math.round(p.x), Math.round(p.y), p); else s.path = []; }
+          const L = layoutOf(game), t = tileOf(s, L, game);
+          if (!p) s.path = [];
+          else if (L.zone[t.y * L.W + t.x] === 1) s.path = [p];   // already in the lane: shuffle straight forward along it
+          else routeTo(game, s, Math.round(p.x), Math.round(p.y), p, 'line'); }   // join at the tail
         step(s, speed * 0.6, dt);
       }
       else if (s.state === 'realize') { s.timer -= dt; if (s.timer <= 0) startLeaving(game, s, leaveOutcome(s)); }
@@ -910,7 +976,7 @@ const MallCore = (() => {
   return { PRESTIGE_LEVEL, PRESTIGE_STORES, PRESTIGE_EARN, PRESTIGE_COST, STAR_K, START_CASH, earnMult, costMult, PERKS, PERK_KEYS, perkCost, perk, msAt, lockAt, msScale, tierOpen, prestigeCheck, prestigeStars, doPrestige, startCash, buyPerk,
     DAILY_MIN, DAILY_BOOST, nice, dayKeyOf, refIncome, goalText, makeDaily, ensureDaily, dailyBump, goalDone, claimGoal, bonusReady, claimBonus, claimableCount, offlineCap, incomeBoost,
     TIER_MILESTONE, unlockNeed, tiersOpen, milestoneOk, famLockOk, TYPES, TYPE_KEYS, CATALOG_KEYS, ALL_TYPE_KEYS, FAMILIES, FAM_KEYS, familyOf, famUnlocked, levelUp, DEV_CODE_SPACES, UPGRADES, STORE_UPGRADES, SU_KEYS, LEVELS, MAX_LEVEL, SAVE_VERSION, OFFLINE_CAP_MS, PATIENCE, SEP_MAX, OUT,
-    rand, redeemCode, DEV_CODE_BONUS, DEV_CODE_UNLOCKS, occupancy, LINE_PATIENCE, MISS_T, soldHere, toWorld, toLocal, localTile, ROOM, SW, SD, DOT_R, QUEUE_IN, BROWSE_T, isFixture, tillsBusy, maxInside, browseSpots, spacesFor, getLayout, layoutOf, walkable, nearestWalkable, slotByKey, storeAt, freeSlots, allSlots, doorOfStore, bfs, findPath,
+    rand, redeemCode, DEV_CODE_BONUS, DEV_CODE_UNLOCKS, occupancy, LINE_PATIENCE, MISS_T, soldHere, toWorld, toLocal, localTile, ROOM, SW, SD, DOT_R, QUEUE_IN, BROWSE_T, isFixture, decorHit, tillsBusy, maxInside, browseSpots, spacesFor, getLayout, layoutOf, walkable, nearestWalkable, slotByKey, storeAt, freeSlots, allSlots, doorOfStore, bfs, findPath,
     upgradeCost, shopperSpeed, revenueMult, spawnInterval, maxShoppers, priceOf, GOODS_STEP, storeIncomePerMin, serviceTime, capacityOf, MAX_REGISTERS, REG_FREE_LV, freeRegisters, nextFreeRegLv, suMaxed, storeProfit, storeUpgradeCost, storeLevel, storeTier, tierFrac,
     newStoreCost, expandCost, isUnlocked, upgradeReady, readyCount, createGame, makeShopper, rollWants, spawnShopper, planNext, arriveAtStore, completePurchase, insideCount,
     moveAlong, incomePerMin, earn, separate, update, simulate, buyUpgrade, buyStore, buyStoreUpgrade, canExpand, expandMall, serialize, deserialize, offlineEarnings, migrateV1 };
@@ -1088,6 +1154,122 @@ const MallTests = (() => {
       for (const o of L) if (o !== s) assert(Math.hypot(s.x - o.x, s.y - o.y) > 0.3, 'overflow shopper not stacked on another'); }
     g.shoppers.forEach(s => { if (s.state === 'service') s.timer = 0; });
     assert(runUntil(g, () => sh.concat(extra).every(s => s.bought === 1), 600), 'everyone served, no deadlock'); eq(g.stats.gaveUp, 0);
+  });
+  // ---- checkout lane + solid fixtures: busy-mall helpers ----
+  // drawn fixture footprints in room-local tile units [kind, u0, v0, u1, v1] (match drawRoom: shelf, islands, display table, counter; tier 1 stockroom partition)
+  const roomFootprints = st => { const f = [['shelf', 3 / 32, 3 / 32, 6 - 3 / 32, 26 / 32], ['islandA', 1 + 3 / 32, 2 + 5 / 32, 5 - 3 / 32, 3 - 5 / 32], ['islandB', 3 / 32, 4 + 5 / 32, 2 - 3 / 32, 5 - 5 / 32],
+    ['table', 5 / 32, 6 + 5 / 32, 57 / 32, 8 - 5 / 32], ['counter', 5 + 2 / 32, 5 + 2 / 32, 5 + 2 / 32 + 0.6, 9 - 2 / 32]]; if (M.storeTier(st) === 1) f.push(['stockroom', 0, 0, 6, 3 + 3 / 32]); return f; };
+  // a shopper's body (radius DOT_R) overlapping a fixture or hall decor → the fixture kind, else null
+  function clipKind(g, L, s) {
+    const wx = s.x + s.ox + 0.5, wy = s.y + s.oy + 0.5, tx = Math.floor(wx), ty = Math.floor(wy), r = tx >= 0 && ty >= 0 && tx < L.W && ty < L.H ? L.reg[ty * L.W + tx] : -2;
+    if (r >= 0) { const sl = L.slots[r], st = M.storeAt(g, sl.key); if (!st) return 'closed room'; const p = M.toLocal(sl, wx, wy);
+      for (const [k, u0, v0, u1, v1] of roomFootprints(st)) { const dx = Math.max(u0 - p.lx, 0, p.lx - u1), dy = Math.max(v0 - p.ly, 0, p.ly - v1); if (Math.hypot(dx, dy) < M.DOT_R - 1e-9) return k; }
+      return null; }
+    const d = M.decorHit(L, wx, wy, M.DOT_R - 1e-9); return d ? d.kind : (r === -2 && ty >= 0 && ty < L.H && tx >= 0 && tx < L.W && L.tiles[ty * L.W + tx] === 2 ? 'wall' : null);
+  }
+  // a busy mall: every space filled (cycling all 18 types), Advertising maxed, regs registers per store
+  function busyMall(level, regs, seed) {
+    const g = M.createGame(seed); g.level = level; g.money = 1e12; g.lifetime = 1e12; g.unlocked = { tiers: true, toys: true, pharmacy: true };
+    let i = 0; while (M.freeSlots(g).length) assert(M.buyStore(g, M.CATALOG_KEYS[i++ % M.CATALOG_KEYS.length]).ok, 'fill');
+    g.upgrades.spawn = 12; for (const st of g.stores) st.capacity = Math.min(5, regs - 1); return g;
+  }
+  // stall a store's registers and push extra shoppers into its line (a long line, past the 10 lane spots)
+  function forceLine(g, st, n) { const sl = M.slotByKey(M.layoutOf(g), st.slot), sp = M.browseSpots(sl, st), fam = M.TYPES[st.type].fam, out = [];
+    for (let k = 0; k < n; k++) { const z = M.spawnShopper(g, [fam], 1e9), p = sp[k % sp.length]; Object.assign(z, { x: p.x, y: p.y, ox: 0, oy: 0, inStore: st.id, target: st.id, state: 'waitTill', waitT: g.time + k * 0.01, qi: -1, spot: null, path: [], linePatience: 1e9, linePatience0: 1e9 }); out.push(z); }
+    return out; }
+  // per frame: movers (walking in, browsing, walking out) within 0.35 tiles of someone standing on a line spot
+  function crossings(g, L) { let n = 0;
+    for (const st of g.stores) { const sl = M.slotByKey(L, st.slot), here = g.shoppers.filter(s => s.inStore === st.id);
+      const standing = here.filter(s => s.state === 'waitTill' && s.qi >= 0 && s.qi < sl.queue.length && !s.path.length);
+      for (const m of here) if (m.state === 'entering' || m.state === 'browse' || m.state === 'exiting') for (const q of standing) if (Math.hypot(m.x + m.ox - q.x - q.ox, m.y + m.oy - q.y - q.oy) < 0.35) n++; }
+    return n; }
+  test('checkout lane: its own roped column — 10 spots in u3 from register 1 back to island A, clear of every fixture, browse spot and the doorway', () => {
+    eq(M.ROOM.queue.length, 10); M.ROOM.queue.forEach(([lx, ly], i) => { near(lx, 3.5, 'lane column'); assert(ly <= 7.9 + 1e-9 && ly >= 3.19, 'spot ' + i + ' inside the lane, clear of the stockroom partition'); if (i) near(M.ROOM.queue[i - 1][1] - ly, 0.51, 'even spacing', 1e-9); });
+    for (const [u, v] of M.ROOM.lane) { assert(!M.ROOM.fixtures.some(f => f.u === u && f.v === v), 'lane tile not a fixture'); assert(!M.ROOM.browse2.some(b => b[0] === u && b[1] === v), 'no browse spot in the lane'); assert(!M.ROOM.doorU.includes(u) || v < M.SD - 2, 'lane clear of the doorway'); }
+    for (const b of M.ROOM.browse2) for (const [lx, ly] of M.ROOM.queue) assert(Math.hypot(b[0] + 0.5 - lx, b[1] + 0.5 - ly) >= 1 - 1e-9, 'browse spots a full tile from the line');
+    const g = withStores(['coffee']), L = M.layoutOf(g), sl = M.slotByKey(L, g.stores[0].slot);
+    for (const q of sl.queue) eq(L.zone[Math.round(q.y) * L.W + Math.round(q.x)], 1, 'every line spot stands in the lane zone');
+    for (const t of sl.tills) eq(L.zone[Math.round(t.y) * L.W + Math.round(t.x)], 2, 'every register spot in the register aisle');
+    // walking in / browsing / out never enters the lane or the register aisle
+    const d = sl.doorIns[0];
+    for (const b of sl.browse2) { const p = M.findPath(L, d.x, d.y, b.x, b.y); assert(p, 'browse spot reachable'); assert(p.every(n => !L.zone[n.y * L.W + n.x]), 'entering path stays out of the lane and register aisle'); }
+  });
+  test('checkout lane: 0 crossings in a busy store with a long line (walk-ins, browsers and walk-outs never pass through the line)', () => {
+    let cross = 0, maxLine = 0, enteringWhileLong = 0;
+    for (const [level, regs, seed] of [[1, 1, 21], [3, 6, 22]]) {
+      const g = busyMall(level, regs, seed), L = M.layoutOf(g), st = g.stores[0];
+      for (let t = 0; t < 90; t += 0.05) {
+        const ph = t % 30;
+        for (const z of g.shoppers) if (z.inStore === st.id && z.state === 'service') { if (ph < 20) { if (z.timer < 1e8) { z._t = z.timer; z.timer = 1e9; } } else if (z.timer > 1e8) z.timer = z._t || 1; }
+        if (ph >= 1 && ph < 1.05 - 1e-9) forceLine(g, st, 8);
+        M.update(g, 0.05); cross += crossings(g, L);
+        const line = g.shoppers.filter(s => s.inStore === st.id && s.state === 'waitTill').length; maxLine = Math.max(maxLine, line);
+        if (line >= 8) enteringWhileLong += g.shoppers.filter(s => s.inStore === st.id && (s.state === 'entering' || s.state === 'exiting')).length;
+      }
+      for (const s of g.shoppers) s.linePatience = 1e9;
+    }
+    assert(maxLine > 10, 'a long line formed: ' + maxLine); assert(enteringWhileLong > 50, 'shoppers walked in/out past it: ' + enteringWhileLong); eq(cross, 0, 'frames where a mover came within 0.35 tiles of the line');
+  });
+  test('checkout lane: nobody gets stuck — 6 registers and long lines, everyone checks out and leaves the mall', () => {
+    const g = busyMall(5, 6, 23), L = M.layoutOf(g), st = g.stores[0], extra = []; const last = new Map(); let stuck = 0;
+    for (let t = 0; t < 200; t += 0.05) {
+      const ph = t % 40;
+      if (t < 120) for (const z of g.shoppers) if (z.inStore === st.id && z.state === 'service') { if (ph < 20) { if (z.timer < 1e8) { z._t = z.timer; z.timer = 1e9; } } else if (z.timer > 1e8) z.timer = z._t || 1; }
+      if (t < 120 && ph >= 1 && ph < 1.05 - 1e-9) extra.push(...forceLine(g, st, 10));
+      if (t >= 120) { g.autoSpawn = false; for (const z of g.shoppers) if (z.timer > 1e8) z.timer = 1; }
+      M.update(g, 0.05);
+      for (const s of g.shoppers) { const moving = ['walking', 'entering', 'toTill', 'exiting', 'leaving'].includes(s.state) || (s.state === 'waitTill' && s.path.length > 0), l = last.get(s.id);
+        if (!l || !moving || l.state !== s.state || Math.hypot(l.x - s.x, l.y - s.y) > 0.01) last.set(s.id, { x: s.x, y: s.y, t: g.time, state: s.state }); else if (g.time - l.t > 3 && !l.flag) { l.flag = 1; stuck++; } }
+    }
+    eq(stuck, 0, 'shoppers frozen for 3 s while meant to be moving');
+    assert(runUntil(g, () => g.shoppers.length === 0, 600), 'everyone left the mall: ' + g.shoppers.length + ' still inside');
+    assert(extra.every(s => s.bought === 1), 'every shopper pushed into the long line checked out');
+  });
+  test('checkout lane: queue order — joins at the tail, front by register 1, spots filled in order, nobody passes anyone', () => {
+    const g = withStores(['coffee']), st = g.stores[0], L = M.layoutOf(g), sl = M.slotByKey(L, st.slot);
+    const blocker = M.spawnShopper(g, ['coffee'], 50); assert(runUntil(g, () => blocker.state === 'service')); blocker.timer = 1e9;
+    const sh = []; for (let i = 0; i < 6; i++) { sh.push(M.spawnShopper(g, ['coffee'], 50)); runUntil(g, () => false, 1.5); }   // room limit: 1 register + a line of 6
+    const tail = M.localTile(sl, 3, 3); let viaTail = 0, passes = 0;
+    const seen = new Set();
+    assert(runUntil(g, () => { for (const s of WL(g, st)) { if (Math.round(s.x) === tail.x && Math.round(s.y) === tail.y && !seen.has(s.id)) { seen.add(s.id); viaTail++; } }
+      const L2 = WL(g, st).filter(s => s.qi >= 0 && s.qi < sl.queue.length && !s.path.length);
+      for (let i = 1; i < L2.length; i++) { const a = L2[i - 1], b = L2[i]; if (Math.hypot(a.x - sl.tills[0].x, a.y - sl.tills[0].y) >= Math.hypot(b.x - sl.tills[0].x, b.y - sl.tills[0].y)) passes++; }
+      return WL(g, st).length === 6 && WL(g, st).every(s => !s.path.length); }, 200), 'line of 6 settles');
+    eq(viaTail, 6, 'every shopper came into the lane at its tail'); eq(passes, 0, 'line order matches lane order (front nearest register 1)');
+    const L1 = WL(g, st); L1.forEach((s, i) => { near(s.x, sl.queue[i].x, 'spot ' + i, 0.02); near(s.y, sl.queue[i].y, 'spot ' + i, 0.02); });
+    blocker.timer = 0; const order = []; assert(runUntil(g, () => { for (const s of sh) if (s.state === 'toTill' && !order.includes(s)) order.push(s); return order.length === 6; }, 200), 'all reach the register');
+    eq(order.map(s => s.id).join(), L1.map(s => s.id).join(), 'served in line order');
+  });
+  test('fixtures are solid: 0 shopper bodies inside any fixture or hall decor footprint in busy malls (every store type, levels 1–' + M.MAX_LEVEL + ')', () => {
+    const hits = {}; let n = 0; const types = new Set();
+    for (const [level, regs, seed] of [[1, 1, 31], [2, 6, 32], [4, 3, 33], [8, 2, 34], [M.MAX_LEVEL, 6, 35]]) {
+      const g = busyMall(level, regs, seed), L = M.layoutOf(g); for (const st of g.stores) types.add(st.type);
+      for (let t = 0; t < 70; t += 0.05) { if (t >= 3 && t < 3.05 - 1e-9) forceLine(g, g.stores[0], 12); M.update(g, 0.05); for (const s of g.shoppers) { n++; const k = clipKind(g, L, s); if (k) hits[k] = (hits[k] || 0) + 1; } }
+    }
+    eq(types.size, 18, 'all 18 store types placed'); assert(n > 20000, 'shopper-frames checked: ' + n);
+    eq(JSON.stringify(hits), '{}', 'shopper-frames overlapping a fixture');
+  });
+  test('fixtures: every browse spot, register and line spot is reachable from each store doorway and the mall entrance, at every mall level', () => {
+    for (let level = 1; level <= M.MAX_LEVEL; level++) { const L = M.getLayout(level);
+      for (const sl of L.slots) for (const d of sl.doorIns) {
+        const free = M.bfs(L, d.x, d.y, 'free'), till = M.bfs(L, d.x, d.y, 'till'), line = M.bfs(L, d.x, d.y, 'line'), ok = (prev, p) => prev[Math.round(p.y) * L.W + Math.round(p.x)] !== -2;
+        for (const b of sl.browse2) { assert(ok(free, b), `L${level} ${sl.key} browse spot reachable`); assert(!M.isFixture(L, b.x, b.y)); }
+        for (const t of sl.tills) assert(ok(till, t), `L${level} ${sl.key} register reachable`);
+        for (const q of sl.queue) assert(ok(line, q), `L${level} ${sl.key} line spot reachable`);
+        for (const b of sl.browse2) { const fromB = M.bfs(L, b.x, b.y, 'line'); assert(sl.queue.every(q => ok(fromB, q)), 'line reachable from every browse spot');
+          const toTill = M.bfs(L, b.x, b.y, 'till'); assert(sl.tills.every(q => ok(toTill, q)), 'registers reachable from every browse spot'); }
+        const q0 = sl.queue[0], fromFront = M.bfs(L, Math.round(q0.x), Math.round(q0.y), 'till'); assert(sl.tills.every(t => ok(fromFront, t)), 'registers reachable from the front of the line');
+        for (const t of sl.tills) { const back = M.bfs(L, Math.round(t.x), Math.round(t.y), 'free'); assert(ok(back, sl.door), 'doorway reachable from every register'); }
+        for (const q of sl.queue) { const back = M.bfs(L, Math.round(q.x), Math.round(q.y), 'free'); assert(ok(back, sl.door), 'doorway reachable from every line spot (giving up)'); }
+        assert(M.findPath(L, L.entrance.x, L.entrance.y, sl.door.x, sl.door.y), 'door reachable from the mall entrance');
+      }
+    }
+  });
+  test('fixtures: the line outside a full store runs along the hall wall and never into the fountain, trees or benches', () => {
+    for (let level = 1; level <= M.MAX_LEVEL; level++) { const L = M.getLayout(level);
+      for (const sl of L.slots) { eq(sl.doorLine[0].x, sl.door.x); eq(sl.doorLine[0].y, sl.door.y);
+        for (let i = 0; i < 60; i++) { let p = null; { const pts = sl.doorLine; let dist = 0.5 * i; for (let k = 0; k + 1 < pts.length && !p; k++) { const a = pts[k], b = pts[k + 1], len = Math.hypot(b.x - a.x, b.y - a.y); if (dist <= len) p = { x: a.x + (b.x - a.x) * dist / (len || 1), y: a.y + (b.y - a.y) * dist / (len || 1) }; else dist -= len; } if (!p) p = pts[pts.length - 1]; }
+          const tx = Math.round(p.x), ty = Math.round(p.y); eq(L.reg[ty * L.W + tx], -1, 'door-line spot in the hall'); assert(!M.decorHit(L, p.x + 0.5, p.y + 0.5, M.DOT_R), `L${level} ${sl.key} spot ${i} clear of decor`); } } }
   });
   test('busy crowds: 20+ shoppers in a level-1 mall with four stores', () => {
     const g = M.createGame(8); g.money = 1e4; for (const t of ['food', 'coffee', 'books', 'clothing']) M.buyStore(g, t);
@@ -1857,19 +2039,23 @@ const MallTests = (() => {
       if (tier === 2 || TH.key === 'realistic') { const g = c.createLinearGradient(0, 0, RW, RD); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, `rgba(255,255,255,${tier >= 2 ? 0.12 : 0.06})`); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, RW, RD); }   // polished finish
       if (tier >= 3) { c.fillStyle = mix(mute(col).slice(1), 'ffffff', 0.45); c.fillRect(T * 0.15, 3 * T + 4, RW - T * 0.3, T - 8); c.fillRect(2 * T + 4, 5 * T, 2 * T - 8, 4 * T);   // carpet runners with gold edging
         c.strokeStyle = '#e1b647'; c.lineWidth = 1.6; c.strokeRect(T * 0.15, 3 * T + 4, RW - T * 0.3, T - 8); c.strokeRect(2 * T + 4, 5 * T, 2 * T - 8, 4 * T); }
+      // checkout lane floor: a mat under the roped column where the line waits (u 3, v 3–8), footprints at each spot
+      c.fillStyle = mix(col.slice(1), '000000', 0.2); c.globalAlpha = 0.34; rrect(c, 3 * T + 2, 3 * T + 3, T - 4, 5 * T - 4, 4); c.fill();
+      c.globalAlpha = 0.55; c.strokeStyle = mix(col.slice(1), '000000', 0.45); c.lineWidth = 1; c.stroke(); c.globalAlpha = 1;
+      c.fillStyle = 'rgba(255,255,255,.45)'; for (const [lx, ly] of M.ROOM.queue) { c.beginPath(); c.ellipse(lx * T, ly * T + 3, 5, 2.2, 0, 0, Math.PI * 2); c.fill(); }
       // fixtures (the same tiles the shoppers path around)
       c.save(); sh(c, TH.key === 'realistic' ? 9 : 4, TH.key === 'realistic' ? 5 : 2.5);
       stock(c, sty, 3, 3, RW - 6, T - 9, col, seed);                                   // back wall
       stock(c, sty, T + 3, 2 * T + 5, 4 * T - 6, T - 10, col, seed + 1);              // island A
-      stock(c, sty, T + 3, 4 * T + 5, 3 * T - 6, T - 10, col, seed + 2);              // island B
+      stock(c, sty, 3, 4 * T + 5, 2 * T - 6, T - 10, col, seed + 2);                  // island B (left side, clear of the aisle and the checkout lane)
       feature(c, sty, 5, 6 * T + 5, 2 * T - 12, 2 * T - 10, col);                     // feature display
       c.restore();
       if (TH.key === 'cartoon') {   // clean darker outlines + a highlight band on every fixture
         c.strokeStyle = 'rgba(45,25,10,.75)'; c.lineWidth = 1.4;
-        for (const [x, y, w, h] of [[3, 3, RW - 6, T - 9], [T + 3, 2 * T + 5, 4 * T - 6, T - 10], [T + 3, 4 * T + 5, 3 * T - 6, T - 10]]) { rrect(c, x, y, w, h, 2.5); c.stroke(); c.fillStyle = 'rgba(255,255,255,.22)'; c.fillRect(x + 1.5, y + 1, w - 3, 1.6); }
+        for (const [x, y, w, h] of [[3, 3, RW - 6, T - 9], [T + 3, 2 * T + 5, 4 * T - 6, T - 10], [3, 4 * T + 5, 2 * T - 6, T - 10]]) { rrect(c, x, y, w, h, 2.5); c.stroke(); c.fillStyle = 'rgba(255,255,255,.22)'; c.fillRect(x + 1.5, y + 1, w - 3, 1.6); }
         rrect(c, 5, 6 * T + 5, 2 * T - 12, 2 * T - 10, 6); c.stroke();
       } else {   // realistic: glossy top sheen on fixtures
-        for (const [x, y, w, h] of [[3, 3, RW - 6, T - 9], [T + 3, 2 * T + 5, 4 * T - 6, T - 10], [T + 3, 4 * T + 5, 3 * T - 6, T - 10]]) { const g = c.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, 'rgba(255,255,255,.22)'); g.addColorStop(0.4, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(0,0,0,.12)'); c.fillStyle = g; c.fillRect(x, y, w, h); }
+        for (const [x, y, w, h] of [[3, 3, RW - 6, T - 9], [T + 3, 2 * T + 5, 4 * T - 6, T - 10], [3, 4 * T + 5, 2 * T - 6, T - 10]]) { const g = c.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, 'rgba(255,255,255,.22)'); g.addColorStop(0.4, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(0,0,0,.12)'); c.fillStyle = g; c.fillRect(x, y, w, h); }
       }
       // checkout counter along the side wall with a register per till (capacity) and cashiers behind
       const cx = 5 * T + 2, cw = T * 0.6;
@@ -1907,9 +2093,9 @@ const MallTests = (() => {
       c.fillStyle = 'rgba(255,255,255,.75)'; for (let x = x0 + 6; x < x1 - 6; x += 22) { c.beginPath(); c.moveTo(x, RD - 4.5); c.lineTo(x + 5, RD - 4.5); c.lineTo(x + 2, RD - 0.5); c.lineTo(x - 3, RD - 0.5); c.closePath(); c.fill(); }   // glass highlights
       c.strokeStyle = TH.key === 'cartoon' ? '#2c3444' : '#5a6068'; c.lineWidth = 1.2; c.strokeRect(x0, RD - 5, x1 - x0, 5); };
     if (st) { glass(4, D0 - 3); glass(D1 + 3, RW - 4); c.fillStyle = '#555c69'; c.fillRect(D0 - 3, RD - 7, 3, 7); c.fillRect(D1, RD - 7, 3, 7); }
-    if (st) { // roped checkout line between the door and the counter (where the waiting line stands)
-      const col = M.TYPES[st.type].color, posts = [[3.02, 5.9], [3.02, 8.2], [3.98, 5.2], [3.98, 7.4]];
-      c.strokeStyle = col; c.lineWidth = 1.6; c.beginPath(); c.moveTo(3.02 * T, 5.9 * T); c.lineTo(3.02 * T, 8.2 * T); c.moveTo(3.98 * T, 5.2 * T); c.lineTo(3.98 * T, 7.4 * T); c.stroke();
+    if (st) { // roped checkout lane (u 3): left rope from the tail opening (v 4) to the front, right rope along the registers up to the front opening (v 7)
+      const col = M.TYPES[st.type].color, posts = [[3.02, 4.05], [3.02, 6.05], [3.02, 8.05], [3.98, 3.05], [3.98, 5.05], [3.98, 6.95]];
+      c.strokeStyle = mix(col.slice(1), '000000', 0.25); c.lineWidth = 2.2; c.beginPath(); c.moveTo(3.02 * T, 4.05 * T); c.lineTo(3.02 * T, 8.05 * T); c.moveTo(3.98 * T, 3.05 * T); c.lineTo(3.98 * T, 6.95 * T); c.stroke();
       for (const [u, v] of posts) { c.fillStyle = '#c9a227'; c.beginPath(); c.arc(u * T, v * T, 2.2, 0, Math.PI * 2); c.fill(); c.strokeStyle = '#6b5410'; c.lineWidth = 0.8; c.stroke(); }
     }
     if (st) { const col = M.TYPES[st.type].color; for (let i = 0; i < 12; i++) { c.fillStyle = i % 2 ? '#ffffff' : col; c.fillRect(i * RW / 12, RD, RW / 12 + 0.3, 4); } c.fillStyle = 'rgba(0,0,0,.15)'; c.fillRect(0, RD + 4, RW, 2); }
