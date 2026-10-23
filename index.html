@@ -1980,7 +1980,7 @@ const MallTests = (() => {
   const sh = (c, blur = TH.shBlur, off = TH.shOff) => { c.shadowColor = TH.shadow; c.shadowBlur = blur; c.shadowOffsetY = off; c.shadowOffsetX = TH.key === 'realistic' ? off * 0.6 : 0; };
   function drawBackground(c, R) {
     const g = c.createRadialGradient(fit.mw / 2, fit.mh / 2, 50, fit.mw / 2, fit.mh / 2, Math.max(fit.mw, fit.mh) * 0.8);
-    g.addColorStop(0, TH.bg0); g.addColorStop(1, TH.bg1);
+    g.addColorStop(0, '#ff0000'); g.addColorStop(1, '#ff0000');
     c.fillStyle = g; c.fillRect(R.x - 2, R.y - 2, R.w + 4, R.h + 4);
     if (TH.key === 'realistic') {   // dark stone paving outside the building
       c.strokeStyle = 'rgba(255,255,255,.035)'; c.lineWidth = 1;
@@ -2443,7 +2443,7 @@ const MallTests = (() => {
   }
   function draw(now) {
     computeView(); ensureStatic(now);
-    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = TH.bg1; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.dpr * view.s, 0, 0, view.dpr * view.s, view.dpr * view.ox, view.dpr * view.oy);
     const want1 = view.dpr * view.s;
     if (Math.abs(cacheK - want1) < 1e-6 * want1) { // cache is 1:1 with the screen: integer-snapped copy, no resampling
