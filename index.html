@@ -52,6 +52,9 @@
   #card .money{color:#ffd36b;font-weight:700;font-size:14px;margin:2px 0}
   #card button{min-height:42px;border:0;border-radius:8px;font-weight:700;cursor:pointer;padding:0 10px}
   #card .x{background:var(--card);color:var(--ink);min-width:36px}
+  #card .sellrow{display:flex;gap:6px;flex:1 1 100%}
+  #card .sell{flex:1 1 0;min-height:36px;background:var(--card);color:#ff9b8f;font-size:12px}
+  #card .sell.go{background:#d9563b;color:#fff}
   #scrim{position:fixed;left:0;right:0;bottom:0;top:var(--hh);background:#0007;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
   #scrim.open{opacity:1;pointer-events:auto}
   #drawer{position:fixed;top:var(--hh);left:0;right:0;z-index:30;max-height:70vh;display:flex;flex-direction:column;background:var(--bg);border-radius:0 0 14px 14px;box-shadow:0 12px 30px #000a;transform:translateY(-105%);visibility:hidden;transition:transform .25s ease,visibility 0s linear .25s}
@@ -107,6 +110,7 @@
   .famhead{font-weight:800;font-size:13px;margin:10px 0 2px;color:var(--ink);border-top:1px solid #ffffff14;padding-top:6px}
   .row.cat.locked{opacity:.5}
   .tl{display:inline-block;font-size:10px;font-weight:800;border-radius:4px;padding:1px 4px;vertical-align:1px}
+  .own{font-size:11px;font-weight:700;color:var(--dim);white-space:nowrap;vertical-align:1px}   /* catalog: how many of this type you own now */
   .tl.t1{background:#3d4862;color:#cfd6e6} .tl.t2{background:#2f6d8a;color:#e3f6ff} .tl.t3{background:#b8902a;color:#2a1d00}
   .badge.gold{background:#ffd36b;color:#3a2a00}
   .jump{display:flex;gap:6px}
@@ -216,6 +220,7 @@
 const MallCore = (() => {
   const SAVE_VERSION = 4;          // v3 = v6 build; v2 saves (v4/v5 builds) load unchanged
   const OFFLINE_CAP_MS = 8 * 3600 * 1000, OFFLINE_RATE = 0.5;
+  const SELL_REFUND = 0.5;   // selling a store refunds half of what it cost to open
   const PATIENCE = 60;            // seconds a shopper will walk/queue before giving up
   const SW = 6, SD = 10;          // store room: SW tiles of frontage, SD tiles deep
   const DOT_R = 0.19;             // shopper dot radius in tiles (used by the renderer and the size test)
@@ -733,7 +738,7 @@ const MallCore = (() => {
         if (s.patience <= 0) { startLeaving(game, s, s.bought > 0 ? 'partial' : 'sad'); continue; }
       }
       const st = s.inStore != null ? storeById(game, s.inStore) : null;
-      if (s.inStore != null && !st) { s.inStore = null; s.till = null; s.spot = null; planNext(game, s); continue; }
+      if (s.inStore != null && !st && !(s.state === 'exiting' && s.path.length)) { s.inStore = null; s.till = null; s.spot = null; planNext(game, s); continue; }
       if (s.state === 'walking') { if (step(s, speed, dt)) arriveAtStore(game, s); }
       else if (s.state === 'queue') {
         const store = storeById(game, s.target);
@@ -791,8 +796,21 @@ const MallCore = (() => {
     const free = freeSlots(game), target = slotKey ? free.find(f => f.key === slotKey) : free[0];
     if (!target) return fail('noslot');
     const cost = newStoreCost(game, type); if (game.money < cost) return fail('funds');
-    game.money -= cost; const st = makeStore(game, type, target.key); game.stores.push(st); dailyBump(game, 'open', 1); if (TYPES[type].tier >= 2) dailyBump(game, 'opentier', 1);
+    game.money -= cost; const st = makeStore(game, type, target.key); st.paid = cost; game.stores.push(st); dailyBump(game, 'open', 1); if (TYPES[type].tier >= 2) dailyBump(game, 'opentier', 1);
     return { ok: true, cost, store: st };
+  }
+  // selling a store: half of what was paid to open it (upgrade spend is not refunded); stores from saves before the price was kept: half the base catalog cost
+  const paidFor = st => num(st.paid) ?? Math.floor(TYPES[st.type].cost * costMult(st.pm || 0));
+  const sellValue = st => Math.floor(paidFor(st) * SELL_REFUND);
+  function sellStore(game, id) {
+    const i = game.stores.findIndex(s => s.id === id); if (i < 0) return fail('unknown');
+    const st = game.stores[i], refund = sellValue(st), door = slotOf(game, st).door;
+    for (const s of game.shoppers) if (s.inStore === st.id) {   // everyone inside (walking in, browsing, in line, at a register) walks out by the door, unserved
+      s.state = 'exiting'; s.till = null; s.spot = null; s.qi = -1; s.inLane = false; s.timer = 0; routeTo(game, s, door.x, door.y);
+    }
+    game.stores.splice(i, 1);   // the space is FOR LEASE again; shoppers heading to it or queued at its door re-plan next frame
+    game.money += refund;   // a refund, not income: no lifetime earnings, income rate, sales or daily-goal progress
+    return { ok: true, refund, type: st.type, slot: st.slot };
   }
   function buyStoreUpgrade(game, id, key) {
     const st = game.stores.find(s => s.id === id), u = STORE_UPGRADES[key]; if (!st || !u) return fail('unknown');
@@ -913,7 +931,7 @@ const MallCore = (() => {
   }
   function serialize(game, now) {
     return { v: SAVE_VERSION, savedAt: now, money: game.money, lifetime: game.lifetime, level: game.level, upgrades: { ...game.upgrades },
-      stores: game.stores.map(s => ({ type: s.type, slot: s.slot, cogs: s.cogs, service: s.service, capacity: s.capacity, earned: s.earned, sales: s.sales, pm: s.pm })),
+      stores: game.stores.map(s => ({ type: s.type, slot: s.slot, cogs: s.cogs, service: s.service, capacity: s.capacity, earned: s.earned, sales: s.sales, pm: s.pm, paid: s.paid })),
       prestige: game.prestige, stars: game.stars, starsTotal: game.starsTotal, perks: { ...game.perks }, allTime: game.allTime,   // optional v4 fields (older saves: 0)
       daily: game.daily ? JSON.parse(JSON.stringify(game.daily)) : null,
       stats: { ...game.stats }, ipm: incomePerMin(game), rng: game.rng,
@@ -964,7 +982,7 @@ const MallCore = (() => {
     function addSaved(s, slot) {
       const st = makeStore(g, s.type, slot);
       for (const k of SU_KEYS) st[k] = Math.min(STORE_UPGRADES[k].max, Math.floor(num(s[k]) ?? 0));
-      st.pm = Math.floor(num(s.pm) ?? g.prestige); st.earned = num(s.earned) ?? 0; st.sales = Math.floor(num(s.sales) ?? 0);
+      st.pm = Math.floor(num(s.pm) ?? g.prestige); st.earned = num(s.earned) ?? 0; st.sales = Math.floor(num(s.sales) ?? 0); if (num(s.paid) != null) st.paid = s.paid;
       g.stores.push(st);
     }
     if (data.stats) for (const k of Object.keys(g.stats)) g.stats[k] = num(data.stats[k]) ?? 0;
@@ -974,7 +992,8 @@ const MallCore = (() => {
     return { game: g, offline: { amount: off, elapsedMs: Math.min(elapsed, cap), capped: elapsed > cap } };
   }
 
-  return { PRESTIGE_LEVEL, PRESTIGE_STORES, PRESTIGE_EARN, PRESTIGE_COST, STAR_K, START_CASH, earnMult, costMult, PERKS, PERK_KEYS, perkCost, perk, msAt, lockAt, msScale, tierOpen, prestigeCheck, prestigeStars, doPrestige, startCash, buyPerk,
+  return { sellStore, sellValue, paidFor, SELL_REFUND,
+    PRESTIGE_LEVEL, PRESTIGE_STORES, PRESTIGE_EARN, PRESTIGE_COST, STAR_K, START_CASH, earnMult, costMult, PERKS, PERK_KEYS, perkCost, perk, msAt, lockAt, msScale, tierOpen, prestigeCheck, prestigeStars, doPrestige, startCash, buyPerk,
     DAILY_MIN, DAILY_BOOST, nice, dayKeyOf, refIncome, goalText, makeDaily, ensureDaily, dailyBump, goalDone, claimGoal, bonusReady, claimBonus, claimableCount, offlineCap, incomeBoost,
     TIER_MILESTONE, unlockNeed, tiersOpen, milestoneOk, famLockOk, TYPES, TYPE_KEYS, CATALOG_KEYS, ALL_TYPE_KEYS, FAMILIES, FAM_KEYS, familyOf, famUnlocked, levelUp, DEV_CODE_SPACES, UPGRADES, STORE_UPGRADES, SU_KEYS, LEVELS, MAX_LEVEL, SAVE_VERSION, OFFLINE_CAP_MS, PATIENCE, SEP_MAX, OUT,
     rand, redeemCode, DEV_CODE_BONUS, DEV_CODE_UNLOCKS, occupancy, LINE_PATIENCE, MISS_T, soldHere, toWorld, toLocal, localTile, ROOM, SW, SD, DOT_R, QUEUE_IN, BROWSE_T, isFixture, decorHit, tillsBusy, maxInside, browseSpots, spacesFor, getLayout, layoutOf, walkable, nearestWalkable, slotByKey, storeAt, freeSlots, allSlots, doorOfStore, bfs, findPath,
@@ -1285,6 +1304,54 @@ const MallTests = (() => {
       eq(stuck, 0, `L${level}: frozen for 3 s while meant to be moving`); assert(inLane > 1000, `L${level}: shoppers stood in the lane (${inLane} shopper-frames)`);
       assert(runUntil(g, () => g.shoppers.length === 0, 300), `L${level}: everyone left: ${g.shoppers.length} still inside`);
     }
+  });
+  test('sell a store: refunds half of what it cost to open (upgrade spend not refunded) — a refund, not income, sales or daily-goal progress', () => {
+    const g = rich(); M.ensureDaily(g, Date.now());
+    const a = M.buyStore(g, 'food'), b = M.buyStore(g, 'coffee'); eq(a.cost, 100); eq(b.cost, 87, '60 × 1.45 (one space already open)');
+    eq(a.store.paid, 100); eq(b.store.paid, 87); eq(M.sellValue(a.store), 50); eq(M.sellValue(b.store), 43, 'floor(87 / 2)');
+    M.buyStoreUpgrade(g, b.store.id, 'cogs'); M.buyStoreUpgrade(g, b.store.id, 'capacity'); eq(M.sellValue(b.store), 43, 'upgrades do not change the refund');
+    const m = g.money, life = g.lifetime, log = g.incomeLog.length, sales = g.stats.sales, daily = JSON.stringify(g.daily), ipm = M.incomePerMin(g);
+    const r = M.sellStore(g, b.store.id); assert(r.ok); eq(r.refund, 43); near(g.money, m + 43, 'refund paid');
+    eq(g.lifetime, life, 'not lifetime earnings'); eq(g.incomeLog.length, log, 'not in the income log'); eq(g.stats.sales, sales, 'not a sale'); eq(JSON.stringify(g.daily), daily, 'no daily-goal progress'); near(M.incomePerMin(g), ipm, 'income rate unchanged');
+    eq(M.sellStore(g, b.store.id).reason, 'unknown', 'cannot sell twice');
+    // prestige pricing: what was paid at prestige 2; a store from an older save without a price: half the base catalog cost at its prestige
+    const p = quiet(); p.prestige = 2; p.money = 1e12; p.lifetime = 1e12; const d = M.buyStore(p, 'designer'); eq(M.sellValue(d.store), Math.floor(d.cost / 2));
+    const old = { ...d.store }; delete old.paid; eq(M.sellValue(old), Math.floor(Math.floor(3750 * M.costMult(2)) / 2));
+  });
+  test('sell a store: its space is FOR LEASE again and re-leasable; opening cost, prestige and Expand Mall checks follow', () => {
+    const g = rich(); g.level = 10; while (M.freeSlots(g).length) M.buyStore(g, 'food'); const n = g.stores.length; assert(M.prestigeCheck(g).ok, 'full level-10 mall');
+    const st = g.stores[3], key = st.slot, c0 = M.newStoreCost(g, 'books'); assert(M.sellStore(g, st.id).ok);
+    eq(M.storeAt(g, key), null, 'space emptied'); assert(M.freeSlots(g).some(f => f.key === key), 'space for lease again'); eq(g.stores.length, n - 1);
+    eq(M.prestigeCheck(g).ok, false, 'prestige needs the mall full again'); eq(M.prestigeCheck(g).filled, n - 1);
+    assert(M.newStoreCost(g, 'books') < c0, 'one fewer open space: next store costs less');
+    const r = M.buyStore(g, 'books', key); assert(r.ok, 're-leased'); eq(r.store.slot, key); eq(M.storeAt(g, key).type, 'books'); assert(M.prestigeCheck(g).ok, 'full again');
+    const h = rich(); while (M.freeSlots(h).length) M.buyStore(h, 'food'); assert(M.canExpand(h).ok); M.sellStore(h, h.stores[0].id); eq(M.canExpand(h).reason, 'unfilled', 'Expand Mall waits for the space to be filled again');
+  });
+  test('sell a busy store: shoppers walking in, browsing, in line and at registers walk out; nobody stuck, no orphan register or line state', () => {
+    for (const [level, regs, seed] of [[1, 1, 71], [5, 3, 72], [M.MAX_LEVEL, 6, 73]]) {
+      const g = busyMall(level, regs, seed); for (let t = 0; t < 60; t += 0.05) M.update(g, 0.05);
+      const st = g.stores.slice().sort((a, b) => g.shoppers.filter(s => s.inStore === b.id).length - g.shoppers.filter(s => s.inStore === a.id).length)[0];
+      const inside = g.shoppers.filter(s => s.inStore === st.id), heading = g.shoppers.filter(s => s.target === st.id && s.inStore == null);
+      const kinds = new Set(inside.map(s => s.state)); assert(inside.length >= 3, `L${level}: busy store (${inside.length} inside)`);
+      const sales = g.stats.sales; assert(M.sellStore(g, st.id).ok);
+      for (const s of inside) { eq(s.state, 'exiting', 'walks out'); eq(s.till, null, 'register freed'); eq(s.spot, null); assert(s.path.length > 0, 'has a way out'); }
+      const last = new Map(); let stuck = 0;
+      for (let t = 0; t < 240; t += 0.05) { if (t > 60) g.autoSpawn = false; M.update(g, 0.05);
+        for (const s of g.shoppers) { const moving = ['walking', 'entering', 'toTill', 'exiting', 'leaving'].includes(s.state) || (s.state === 'waitTill' && s.path.length > 0), l = last.get(s.id);
+          if (!l || !moving || l.state !== s.state || Math.hypot(l.x - s.x, l.y - s.y) > 0.01) last.set(s.id, { x: s.x, y: s.y, t: g.time, state: s.state }); else if (g.time - l.t > 3 && !l.flag) { l.flag = 1; stuck++; } }
+        assert(g.shoppers.every(s => s.inStore !== st.id || (s.state === 'exiting' && s.till == null)), 'only walking out of the sold store');
+        if (t > 20) { assert(!g.shoppers.some(s => s.inStore === st.id), 'everyone out of the sold store'); assert(!g.shoppers.some(s => s.target === st.id && (s.state === 'queue' || s.state === 'walking')), 'nobody still heading to or queued at it'); }
+        if (t > 60 && !g.shoppers.length) break; }
+      eq(stuck, 0, `L${level}: frozen for 3 s while meant to be moving (sold with ${[...kinds].join('/')} inside, ${heading.length} heading there)`);
+      assert(runUntil(g, () => g.shoppers.length === 0, 300), `L${level}: everyone left the mall`); assert(g.stats.sales >= sales);
+    }
+  });
+  test('sell a store: survives save and reload (space still for lease, prices kept for the refund, owned stores intact)', () => {
+    const g = rich(); const a = M.buyStore(g, 'food').store, b = M.buyStore(g, 'coffee').store, c = M.buyStore(g, 'food').store; M.sellStore(g, a.id);
+    const d = M.deserialize(JSON.parse(JSON.stringify(M.serialize(g, 1000))), 1000).game;
+    eq(d.stores.length, 2); eq(M.storeAt(d, a.slot), null, 'sold space still empty'); assert(M.freeSlots(d).some(f => f.key === a.slot));
+    eq(d.stores.map(s => s.type).join(), 'coffee,food'); eq(M.sellValue(M.storeAt(d, b.slot)), M.sellValue(b), 'refund kept'); eq(M.sellValue(M.storeAt(d, c.slot)), M.sellValue(c)); near(d.money, g.money);
+    const r = M.buyStore(d, 'books', a.slot); assert(r.ok, 're-lease after reload');
   });
   test('fixtures are solid: 0 shopper bodies inside any fixture or hall decor footprint in busy malls (every store type, levels 1–' + M.MAX_LEVEL + ')', () => {
     const hits = {}; let n = 0; const types = new Set();
@@ -2392,6 +2459,7 @@ const MallTests = (() => {
   $('scrim').addEventListener('click', () => { if (performance.now() - drawerOpenedAt > 450) setDrawer(false); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (drawerOpen) setDrawer(false); else if (selected) { selected = null; refreshCard(); } } });
 
+  const ownedCount = k => game.stores.reduce((n, s) => n + (s.type === k ? 1 : 0), 0);   // stores of type k standing in a space right now
   const suBtn = (st, k, cls = 'mini') => `<button class="${cls}" data-act="su" data-id="${st.id}" data-k="${k}"></button>`;
   function buildPanel() {
     const P = $('drawerBody'); let h = '';
@@ -2407,7 +2475,7 @@ const MallTests = (() => {
     h += `<section id="sec-new"><h2>Store catalog <span style="text-transform:none">(${free} empty space${free === 1 ? '' : 's'}${selFree ? ' — opening in the selected space' : ''})</span></h2>`;
     h += `<div class="d tiermiles" data-tiermiles></div>`;
     for (const f of M.FAM_KEYS) { const F = M.FAMILIES[f]; h += `<div class="famhead">${F.icon} ${F.name}</div>`;
-      for (const k of F.tiers) { const TY = M.TYPES[k]; h += `<div class="row cat" data-crow="${k}"><div class="info"><div class="t"><span class="tl t${TY.tier}">T${TY.tier}</span> ${TY.icon} ${TY.name}</div><div class="d" data-tdesc="${k}"></div></div><button class="buy" data-act="store" data-k="${k}"></button></div>`; } }
+      for (const k of F.tiers) { const TY = M.TYPES[k]; h += `<div class="row cat" data-crow="${k}"><div class="info"><div class="t"><span class="tl t${TY.tier}">T${TY.tier}</span> ${TY.icon} ${TY.name} <span class="own" data-own="${k}"></span></div><div class="d" data-tdesc="${k}"></div></div><button class="buy" data-act="store" data-k="${k}"></button></div>`; } }
     h += '</section>';
     h += '<section id="sec-stores"><h2>Your stores</h2>' + (game.stores.length ? '' : '<div class="d" style="color:var(--dim);font-size:13px">No stores yet — open one from the catalog.</div>');
     for (const st of game.stores) {
@@ -2472,6 +2540,7 @@ const MallTests = (() => {
       P.querySelector(`[data-tdesc="${key}"]`).textContent = un ? `${per} · opens for ${fmt(c)}` :
         `🔒 ${u.milestone ? `Tier ${TY.tier}` : M.FAMILIES[TY.fam].name} at ${fmt(u.at)} earned (${fmt(Math.floor(game.lifetime))}/${fmt(u.at)}) · ${per} · ${fmt(c)}`;
       P.querySelector(`[data-crow="${key}"]`).classList.toggle('locked', !un);
+      { const n = ownedCount(key), o = P.querySelector(`[data-own="${key}"]`); if (o) { o.dataset.n = n; const tx = n ? `x${n}` : ''; if (o.textContent !== tx) o.textContent = tx; } }   // stores of this type placed right now; nothing for 0
       setBtn(P.querySelector(`[data-act="store"][data-k="${key}"]`), !un ? 'Locked' : free ? fmt(c) : 'No space', un && free > 0 && game.money >= c);
     }
     refreshGoals(P); refreshPrestige(P);
@@ -2525,6 +2594,7 @@ const MallTests = (() => {
     else if (act === 'bonus') { r = M.claimBonus(game); if (r.ok) toast('🏅 All daily goals done: +10% income for the rest of today!', 3500); }
     else if (act === 'perk') { r = M.buyPerk(game, data.k); if (r.ok) toast(`${M.PERKS[data.k].icon} ${M.PERKS[data.k].name} level ${M.perk(game, data.k)}`, 2000); }
     else if (act === 'prestige') { openPrestigeConfirm(); return { ok: false, reason: 'confirm' }; }
+    else if (act === 'sell') { r = M.sellStore(game, +data.id); sellArm = null; if (r.ok) toast(`💸 Sold ${M.TYPES[r.type].icon} ${M.TYPES[r.type].name} for ${fmt(r.refund)}. The space is for lease again.`, 2500); }
     else if (act === 'expand') { r = M.expandMall(game); if (r.ok) { toast(`🏗️ Mall level ${game.level}! ${M.freeSlots(game).length} new spaces for lease.`, 3000); selected = null; } }
     if (r && r.ok) { save(); refreshPanel(); refreshCard(); refreshHeader(); }
     return r;
@@ -2533,15 +2603,17 @@ const MallTests = (() => {
     if (b.dataset.act === 'store' && r && r.ok && drawerOpen) setDrawer(false); });   // a placed store closes the shop so its card (and upgrades) show
 
   /* ---------- selection card + canvas taps ---------- */
+  let sellArm = null;   // store id waiting for the second (confirm) tap on Sell
   function refreshCard() {
     const card = $('card');
     if (!selected || !M.slotByKey(M.layoutOf(game), selected)) { if (card.style.display !== 'none') { card.style.display = 'none'; placeZoomCtl(); } return; }
-    const st = M.storeAt(game, selected);
+    const st = M.storeAt(game, selected); if (!st || st.id !== sellArm) sellArm = null;
     let html;
     if (st) {
       const TY = M.TYPES[st.type];
       html = `<div class="ci"><div class="t">${TY.icon} ${TY.name} · ${M.FAMILIES[TY.fam].name} tier ${TY.tier} · Lv ${M.storeLevel(st)} ${'★'.repeat(M.storeTier(st))}</div><div class="money" data-cmoney>${storeMoney(st)}</div><div class="d">${M.serviceTime(st).toFixed(1)}s checkout · ${regText(st)} · ${M.insideCount(game, st)} inside · earned ${fmt(st.earned)}</div></div><button class="x" data-cact="close">✕</button>
-        <div class="minis">${M.SU_KEYS.map(k => { const [lab, en] = suLabel(st, k); return `<button class="mini" data-cact="su" data-k="${k}" ${en ? '' : 'disabled'}>${lab}</button>`; }).join('')}</div>`;
+        <div class="minis">${M.SU_KEYS.map(k => { const [lab, en] = suLabel(st, k); return `<button class="mini" data-cact="su" data-k="${k}" ${en ? '' : 'disabled'}>${lab}</button>`; }).join('')}</div>`
+        + `<div class="sellrow">${sellArm === st.id ? `<button class="sell go" data-cact="sellok">Confirm: sell for ${fmt(M.sellValue(st))}</button><button class="sell" data-cact="sellno">Cancel</button>` : `<button class="sell" data-cact="sell">💸 Sell for ${fmt(M.sellValue(st))}?</button>`}</div>`;
     } else html = `<div class="ci"><div class="t">🏷️ Space for lease</div><div class="d">Your next store opens here</div></div><button class="buy" data-cact="shop">Open a store</button><button class="x" data-cact="close">✕</button>`;
     if (card.dataset.html !== html) { card.innerHTML = html; card.dataset.html = html; }
     card.style.display = 'flex'; placeZoomCtl();
@@ -2551,6 +2623,9 @@ const MallTests = (() => {
     if (b.dataset.cact === 'close') { selected = null; refreshCard(); }
     else if (b.dataset.cact === 'shop') setDrawer(true, 'sec-new');
     else if (b.dataset.cact === 'su') { const st = M.storeAt(game, selected); if (st) doAction('su', { id: st.id, k: b.dataset.k }); }
+    else if (b.dataset.cact === 'sell') { const st = M.storeAt(game, selected); if (st) { sellArm = st.id; refreshCard(); } }   // first tap only asks
+    else if (b.dataset.cact === 'sellno') { sellArm = null; refreshCard(); }
+    else if (b.dataset.cact === 'sellok') { const st = M.storeAt(game, selected); if (st && sellArm === st.id) doAction('sell', { id: st.id }); }
   });
   function tapSlot(key) {
     selected = key && selected !== key ? key : null;
@@ -2842,6 +2917,38 @@ const MallTests = (() => {
     tapAt(slotCentre(key)); tapAt(slotCentre(key)); if (drawerOpen) throw new Error('tapping a store must not open the drawer');
     refreshCard(); if ($('card').style.display !== 'flex' || $('card').querySelectorAll('[data-cact="su"]').length !== 3) throw new Error('store card with 3 upgrades not shown');
     const b = $('card').querySelector('[data-cact="su"][data-k="service"]'); b.click(); if (game.stores[0].service !== 1) throw new Error('card upgrade did not apply');
+  }));
+  MallTests.add('UI: store catalog shows how many of each type you own right now ("Burger Joint x2"); none shown for 0, locked types included', () => sandbox(() => {
+    game.money = 1e6; setDrawer(true, 'sec-new'); const P = $('drawerBody');
+    const own = k => { refreshPanel(); const o = P.querySelector(`[data-own="${k}"]`); if (!o) throw new Error('no owned count for ' + k); return o; };
+    const check = want => { for (const k of M.CATALOG_KEYS) { const o = own(k), n = want[k] || 0; if (o.dataset.n !== String(n) || o.textContent !== (n ? 'x' + n : '')) throw new Error(`${k}: "${o.textContent}" n=${o.dataset.n}, want ${n}`); } };
+    check({});
+    const name = P.querySelector('[data-crow="food"] .t'); if (!name.textContent.trim().endsWith('Burger Joint')) throw new Error('name: ' + name.textContent);
+    M.buyStore(game, 'food'); check({ food: 1 }); if (!P.querySelector('[data-crow="food"] .t').textContent.trim().endsWith('Burger Joint x1')) throw new Error('format');
+    setDrawer(false); M.buyStore(game, 'food'); setDrawer(true); check({ food: 2 });   // reopen after buying: +1
+    if (!P.querySelector('[data-crow="pharmacy"]').classList.contains('locked') || own('pharmacy').dataset.n !== '0') throw new Error('locked type shows 0');
+    M.buyStore(game, 'coffee'); check({ food: 2, coffee: 1 });
+    // the badge is a small suffix on the name line: no extra wrapping, same row height
+    const o = own('food'), t = o.parentElement, fs = parseFloat(getComputedStyle(o).fontSize); if (fs < 10 || fs > 12) throw new Error('badge font ' + fs);
+    if (getComputedStyle(o).whiteSpace !== 'nowrap') throw new Error('badge may wrap');
+    M.sellStore(game, game.stores[0].id); check({ food: 1, coffee: 1 });   // selling follows
+    game.level = 10; game.lifetime = 1e9; game.money = 1e15; for (let i = 0; i < 60 && M.freeSlots(game).length; i++) if (!M.buyStore(game, 'books').ok) throw new Error('fill with books'); const nb = game.stores.filter(s => s.type === 'books').length; check({ food: 1, coffee: 1, books: nb });
+    if (!M.doPrestige(game).ok) throw new Error('prestige'); check({});   // prestige resets: all back to none
+  }));
+  MallTests.add('UI: selling from the store card takes two taps (Sell for $X? → Confirm), refunds half, frees the space, updates the catalog', () => sandbox(() => {
+    game.money = 1e4; const key = M.layoutOf(game).slots[1].key; const r0 = M.buyStore(game, 'food', key); M.buyStore(game, 'coffee');
+    selected = key; refreshCard(); const C = $('card'), sell = () => C.querySelector('[data-cact="sell"]');
+    if (!sell() || !sell().textContent.includes('Sell for ' + fmt(r0.cost / 2))) throw new Error('sell button: ' + (sell() && sell().textContent));
+    sell().click(); if (!M.storeAt(game, key)) throw new Error('one tap must not sell');
+    const ok = C.querySelector('[data-cact="sellok"]'), no = C.querySelector('[data-cact="sellno"]'); if (!ok || !no || !ok.textContent.includes('Confirm') || !ok.textContent.includes(fmt(r0.cost / 2))) throw new Error('confirm not shown');
+    no.click(); if (!sell() || C.querySelector('[data-cact="sellok"]') || !M.storeAt(game, key)) throw new Error('cancel');
+    selected = M.layoutOf(game).slots[0].key; refreshCard(); selected = key; refreshCard(); sell().click(); selected = M.layoutOf(game).slots[0].key; refreshCard(); selected = key; refreshCard();
+    if (C.querySelector('[data-cact="sellok"]')) throw new Error('confirm must not survive switching stores');
+    const m = game.money; sell().click(); C.querySelector('[data-cact="sellok"]').click();
+    if (M.storeAt(game, key)) throw new Error('not sold'); approx(game.money, m + 50, 1e-9, 'refund'); if (game.lifetime !== 0) throw new Error('refund counted as earnings');
+    if (!C.textContent.includes('Space for lease') || !C.querySelector('[data-cact="shop"]')) throw new Error('card should offer the empty space');
+    setDrawer(true); refreshPanel(); if ($('drawerBody').querySelector('[data-own="food"]').dataset.n !== '0') throw new Error('owned count after sell');
+    const r = doAction('store', { k: 'books' }); if (!r.ok || r.store.slot !== key) throw new Error('re-lease the sold space');
   }));
   MallTests.add('UI: Shop tab shows an upgrade-ready count', () => sandbox(() => {
     game.money = 1e4; M.buyStore(game, 'food'); game.money = 0; refreshHeader(); if ($('readyBadge').style.display !== 'none') throw new Error('badge shown with no money');
