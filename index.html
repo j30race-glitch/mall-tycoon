@@ -32,6 +32,9 @@
   #shopTab[aria-expanded="true"] .chev{transform:rotate(180deg)}
   .lbl-short{display:none}
   #gear{width:38px;font-size:19px}
+  /* back to the title menu (pauses the game): top-left of the play area, mirroring the zoom buttons; the fitted mall is centred, so this corner is as clear as theirs */
+  #homeBtn{position:absolute;left:8px;top:8px;z-index:11;width:36px;height:36px;padding:0;border:0;border-radius:10px;background:#10151fd9;color:#fff;font-size:17px;line-height:36px;cursor:pointer;box-shadow:0 2px 8px #0007;opacity:.85}
+  #homeBtn:active{opacity:1}
   @media (max-width:600px){ .brand .title{display:none} .lbl-long{display:none} .lbl-short{display:inline} .stat{padding:4px 5px;font-size:12px} .stat b{font-size:13px} .chips{gap:4px} #shopTab{padding:0 9px} }
   @media (max-width:430px){ .brand{display:none} }   /* cover screen: room for big money / income values */
   @media (max-width:380px){ .stat{padding:3px 5px;font-size:12px} #shopTab{padding:0 8px} }
@@ -122,6 +125,23 @@
   #pconfirm{position:fixed;inset:0;background:#000b;z-index:55;display:none;align-items:center;justify-content:center;padding:16px}
   #pconfirm ul{margin:6px 0 10px 18px;padding:0;font-size:13px;line-height:1.45}
   #pconfirm .go{background:linear-gradient(90deg,#b98bff,#ffd36b)!important;color:#2a1840!important;font-weight:800}
+  /* title screen menu (shown on every normal load; the simulation is paused while it is up) */
+  #menu{position:fixed;inset:0;z-index:70;display:none;flex-direction:column;align-items:center;justify-content:center;padding:calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));background:radial-gradient(120% 80% at 50% 0%,#2a3550 0%,var(--bg) 60%);overflow-y:auto;overscroll-behavior:contain}
+  #menu.open{display:flex}
+  #menu .mpane{width:min(440px,100%);display:flex;flex-direction:column;align-items:center;gap:14px;margin:auto 0}
+  #menu .mpane[hidden]{display:none}
+  #menu .mlogo{width:clamp(96px,26vw,132px);height:auto;filter:drop-shadow(0 8px 18px #0009)}
+  #menu h1{margin:0;font-size:clamp(34px,10vw,48px);font-weight:800;letter-spacing:.01em;color:var(--accent);text-shadow:0 3px 0 #0006;text-align:center;line-height:1.05}
+  #menu .msub{margin:-6px 0 8px;color:var(--dim);font-size:15px;text-align:center}
+  #menu .mbtn{width:100%;min-height:56px;font-family:inherit;border:0;border-radius:14px;font-size:19px;font-weight:800;cursor:pointer;background:var(--card);color:var(--ink);box-shadow:0 4px 0 #0007}
+  #menu .mbtn.play{background:var(--accent);color:#222;font-size:22px;min-height:62px}
+  #menu .mbtn:active{transform:translateY(2px);box-shadow:0 2px 0 #0007}
+  #menu h2{margin:0;font-size:24px;color:var(--accent);align-self:flex-start}
+  #menu .howto{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;width:100%}
+  #menu .howto li{background:var(--panel);border-radius:10px;padding:9px 11px;font-size:14px;line-height:1.4}
+  #menu .howto b{color:var(--ink)}
+  #menu .howto span{color:#c9d2e1}
+  @media (min-width:700px){ #menu .mpane{width:min(560px,100%)} #menu .howto li{font-size:15px} }
 </style>
 </head>
 <body>
@@ -135,13 +155,34 @@
   <button id="shopTab" aria-expanded="false" aria-controls="drawer">🛒 <span class="lbl-long">Shop &amp; Upgrades</span><span class="lbl-short">Shop</span> <span id="readyBadge" class="badge" style="display:none">0</span><span id="goalBadge" class="badge gold" style="display:none" title="Daily goal ready to claim">🎯</span> <span class="chev">▾</span></button>
   <button id="gear" aria-label="Settings">⚙</button>
 </header>
-<div id="stage"><canvas id="cv"></canvas><div id="card"></div></div>
+<div id="stage"><canvas id="cv"></canvas><button id="homeBtn" aria-label="Title menu" title="Title menu">🏠</button><div id="card"></div></div>
 <div id="scrim"></div>
 <div id="drawer" aria-hidden="true">
   <div class="dhead"><div class="jump"><button data-jump="sec-goals" aria-label="Daily goals">🎯 Goals</button><button data-jump="sec-up" aria-label="Shop">🛒 Shop</button><button data-jump="sec-prestige" aria-label="Prestige">⭐ <span id="jumpP">Prestige</span></button></div><button id="drawerClose" aria-label="Close">✕</button></div>
   <div id="drawerBody"></div>
 </div>
 <div id="toast"></div>
+<div id="menu" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+  <div class="mpane" id="menuMain">
+    <svg class="mlogo" viewBox="0 0 120 120" aria-hidden="true"><rect width="120" height="120" rx="26" fill="#161c28"/><path d="M44 36V30a16 16 0 0 1 32 0v6" fill="none" stroke="#e8a92a" stroke-width="6" stroke-linecap="round"/><rect x="24" y="36" width="72" height="66" rx="6" fill="#ffcc4d"/><rect x="24" y="36" width="72" height="9" rx="4" fill="#f0b93a"/><circle cx="40" cy="48" r="3" fill="#3a2f12"/><circle cx="80" cy="48" r="3" fill="#3a2f12"/><text x="60" y="88" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-weight="900" font-size="34" fill="#1d1d1d">M</text></svg>
+    <h1 id="menuTitle">Mall Tycoon</h1>
+    <div class="msub">Build the busiest mall in town</div>
+    <button class="mbtn play" id="menuPlay">▶ Play</button>
+    <button class="mbtn" id="menuHow">❓ How to Play</button>
+  </div>
+  <div class="mpane" id="menuHowPane" hidden>
+    <h2>How to Play</h2>
+    <ul class="howto">
+      <li><b>🏬 Open stores</b> <span>— Tap a FOR LEASE space and pick a store to open there. You start with $150. Stores come in six families: Dining, Café, Fashion, Tech, Books &amp; Play and Health (Health and the Toy Store unlock as you earn).</span></li>
+      <li><b>🚶 Shoppers</b> <span>— Each shopper shows want icons (🍽️ ☕ 👗 💻 📚 🏥) and has a budget. They walk to a store that sells what they want at a price they can afford. If your mall doesn't sell it, they leave unhappy, so open a mix of families.</span></li>
+      <li><b>🧾 Registers &amp; lines</b> <span>— Every sale happens at a checkout register. Shoppers line up inside the store and the front of the line takes the next free register. A new store has 1 register.</span></li>
+      <li><b>⬆️ Store upgrades</b> <span>— Tap a store: 📦 Goods (+10% price per sale), ⏱️ Service (faster checkout) and 👥 Capacity (+1 register). Each upgrade raises the store's level, and levels 5, 10, 15 and 20 give a free extra register (6 max).</span></li>
+      <li><b>🛒 Shop &amp; Upgrades</b> <span>— Mall-wide boosts: Moving Walkways (faster shoppers), Marketing (more profit) and Advertising (more shoppers). Once every space is filled, Expand Mall for new spaces. Earning more unlocks tier 2 and 3 stores.</span></li>
+      <li><b>💰 Earning cash</b> <span>— Each sale pays the store's price. Spend it on new stores and upgrades. While you're away the mall earns 50% of its income rate, for up to 8 hours. Claim daily goals for bonuses. A full level-10 mall can Prestige for stars and perks.</span></li>
+    </ul>
+    <button class="mbtn" id="menuBack">← Back</button>
+  </div>
+</div>
 <div id="settings"><div class="modal">
   <h3>⚙ Settings</h3>
   <div id="statsbox" style="font-size:13px;color:var(--dim);margin-bottom:10px"></div>
@@ -1478,7 +1519,9 @@ const MallTests = (() => {
   const view = { cssW: 1, cssH: 1, dpr: 1, s: 1, ox: 0, oy: 0 };
 
   const fmt = n => { if (!isFinite(n)) return '—'; if (n < 1000) return '$' + (n < 100 ? n.toFixed(n % 1 ? 1 : 0) : Math.floor(n)); const u = ['K','M','B','T','Qa']; let i = -1; while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; } return '$' + n.toFixed(n < 10 ? 2 : 1) + u[i]; };
-  const toast = (msg, ms = 3500) => { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; placeToast(); clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', ms); };
+  // title screen menu state: open on every normal load (not for index.html#test, so the automated suite runs unobstructed); toasts wait until Play
+  let menuOpen = location.hash !== '#test'; const menuToasts = [];
+  const toast = (msg, ms = 3500) => { if (menuOpen) { menuToasts.push([msg, ms]); return; } const t = $('toast'); t.textContent = msg; t.style.display = 'block'; placeToast(); clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', ms); };
   // toasts sit just above the store card / space-for-lease bar when one is open (never over its Goods/Service/Capacity buttons)
   function placeToast() { const t = $('toast'), cd = $('card'); if (!t || t.style.display === 'none') return; let b = 20; if (cd && cd.style.display === 'flex') { const r = cd.getBoundingClientRect(); if (r.height) b = Math.max(b, Math.round(window.innerHeight - r.top + 10)); } if (t.dataset.b != b) { t.dataset.b = b; t.style.bottom = b + 'px'; } }
 
@@ -2681,23 +2724,84 @@ const MallTests = (() => {
   $('closeTests').onclick = () => { $('tests').style.display = 'none'; if (location.hash === '#test') history.replaceState(null, '', location.pathname + location.search); };
   $('resetBtn').onclick = () => { if (confirm('Reset your whole mall? This cannot be undone.')) { try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(OLD_KEY); } catch (e) {} game = M.createGame(Date.now() >>> 0); M.ensureDaily(game, M.dayKeyOf(new Date())); selected = null; structKey = ''; $('settings').style.display = 'none'; refreshPanel(); refreshCard(); } };
 
+  /* ---------- title screen menu ---------- */
+  function showMenu(how) { menuOpen = true; $('menuMain').hidden = !!how; $('menuHowPane').hidden = !how; $('menu').classList.add('open'); }
+  function closeMenu() {
+    menuOpen = false; $('menu').classList.remove('open'); $('menuMain').hidden = false; $('menuHowPane').hidden = true;
+    last = performance.now();   // same as returning to a hidden tab: no simulated time passes while the menu was up
+    const q = menuToasts.splice(0); q.forEach(([m, ms], i) => setTimeout(() => toast(m, ms), 300 + i * 400));
+  }
+  // 🏠 in the HUD: back to the title menu mid-game. Saves first, closes the shop drawer and any modal; the store card stays as it was.
+  // Pausing is the same as at startup (frame() just keeps resetting the clock), so Play resumes exactly where you left off: no away earnings.
+  function openHomeMenu() {
+    save(); setDrawer(false); for (const id of ['settings', 'tests', 'pconfirm']) $(id).style.display = 'none';
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    showMenu(false); $('menuPlay').focus();
+  }
+  $('homeBtn').onclick = openHomeMenu;
+  $('menuPlay').onclick = closeMenu;
+  $('menuHow').onclick = () => { showMenu(true); $('menuBack').focus(); };
+  $('menuBack').onclick = () => { showMenu(false); $('menuPlay').focus(); };
+  if (menuOpen) showMenu(false);
+  MallTests.add('Menu: shows on a normal load, with title, Play and How to Play (hidden only for #test)', () => {
+    const m = $('menu'); if (!m || !$('menuPlay') || !$('menuHow') || !$('menuBack')) throw new Error('menu elements missing');
+    if ($('menuTitle').textContent !== 'Mall Tycoon') throw new Error('title text');
+    const was = menuOpen;
+    try { showMenu(false); if (getComputedStyle(m).display === 'none' || !menuOpen) throw new Error('menu not visible'); if ($('menuMain').hidden || !$('menuHowPane').hidden) throw new Error('main pane should show first'); }
+    finally { if (!was) closeMenu(); }
+    if (!/menuOpen = location\.hash !== '#test'/.test(document.documentElement.innerHTML)) throw new Error('menu must open on load unless #test');
+  });
+  MallTests.add('Menu: Play dismisses it and resumes the game clock', () => {
+    const was = menuOpen;
+    try { showMenu(false); $('menuPlay').click(); if (menuOpen || getComputedStyle($('menu')).display !== 'none') throw new Error('menu still open after Play'); if (performance.now() - last > 50) throw new Error('clock not reset on Play'); }
+    finally { if (was) showMenu(false); }
+  });
+  MallTests.add('Menu: How to Play opens the instructions, Back returns to the menu', () => {
+    const was = menuOpen;
+    try { showMenu(false); $('menuHow').click(); if (!$('menuMain').hidden || $('menuHowPane').hidden) throw new Error('How to Play pane not shown'); if (!menuOpen) throw new Error('menu closed');
+      if (!/register/i.test($('menuHowPane').textContent)) throw new Error('instructions text missing');
+      $('menuBack').click(); if ($('menuMain').hidden || !$('menuHowPane').hidden) throw new Error('Back did not return to the menu'); if (!menuOpen) throw new Error('Back should not start the game'); }
+    finally { if (!was) closeMenu(); }
+  });
+
   /* ---------- main loop ---------- */
   function syncHeaderHeight() { document.documentElement.style.setProperty('--hh', document.querySelector('header').offsetHeight + 'px'); }
   load(); M.ensureDaily(game, M.dayKeyOf(new Date())); syncHeaderHeight(); window.addEventListener('resize', syncHeaderHeight);
   let last = performance.now(), uiT = 0, saveT = 0;
-  function frame(now) {
+  function frame(now) { tick(now); requestAnimationFrame(frame); }
+  function tick(now) {
+    if (menuOpen) { last = now; return; }   // title menu up: paused, no time passes
     const dt = Math.min(0.25, (now - last) / 1000); last = now;
     M.update(game, dt);
     for (const f of fx) f.t += dt;
     draw(now);
     uiT += dt; if (uiT > 0.25) { uiT = 0; if (checkDay()) toast('🎯 New daily goals are ready!', 3000); checkTierMilestones(); refreshHeader(); if (drawerOpen) refreshPanel(); refreshCard(); placeZoomCtl(); }
     saveT += dt; if (saveT > 10) { saveT = 0; save(); }
-    requestAnimationFrame(frame);
   }
   refreshHeader(); refreshPanel(); requestAnimationFrame(frame);
   document.addEventListener('visibilitychange', () => { if (document.hidden) save(); else last = performance.now(); });
   window.addEventListener('pagehide', save);
   window.addEventListener('resize', () => { cam.lastChange = performance.now(); });
+  MallTests.add('Home button: top-left of the play area, clear of the HUD, ⚙, zoom buttons and the fitted mall; opens the title menu (How to Play/Back work)', () => keepSave(() => sandbox(() => {
+    const hb = $('homeBtn'), r = hb.getBoundingClientRect(); if (!hb || r.width < 30 || r.height < 30) throw new Error('home button missing or too small');
+    const tl = worldToScreen(0, 0), cr = cv.getBoundingClientRect(); if (tl.x + cr.left < r.right && tl.y + cr.top < r.bottom) throw new Error('home button covers the mall at fit');
+    for (const el of [...document.querySelectorAll('header .stat'), $('gear'), $('shopTab'), $('zoomCtl'), document.querySelector('header')]) { const q = el.getBoundingClientRect(); if (q.width && r.left < q.right && q.left < r.right && r.top < q.bottom && q.top < r.bottom) throw new Error('home button overlaps ' + (el.id || el.textContent)); }
+    setDrawer(true); hb.click();
+    if (!menuOpen || getComputedStyle($('menu')).display === 'none' || $('menuMain').hidden) throw new Error('menu not shown'); if (drawerOpen) throw new Error('drawer should close');
+    if (JSON.parse(localStorage.getItem(SAVE_KEY)).money !== game.money) throw new Error('not saved on open');
+    $('menuHow').click(); if ($('menuHowPane').hidden) throw new Error('How to Play'); $('menuBack').click(); if ($('menuMain').hidden) throw new Error('Back');
+    $('menuPlay').click(); if (menuOpen) throw new Error('Play did not close the menu');
+  }, g => { g.money = 777; })));
+  MallTests.add('Home button: no game time passes while the menu is up (1 s), Play resumes with cash, stores and shoppers unchanged', () => keepSave(() => sandbox(() => {
+    game.autoSpawn = true; for (let i = 0; i < 6; i++) M.spawnShopper(game); M.simulate(game, 3);
+    const snap = () => JSON.stringify({ t: game.time, m: game.money, life: game.lifetime, st: game.stores.map(s => [s.type, s.slot, s.sales]), sh: game.shoppers.map(s => [s.id, s.state, +s.x.toFixed(4), +s.y.toFixed(4)]) });
+    const before = snap(); if (!game.shoppers.length) throw new Error('no shoppers to check');
+    $('homeBtn').click(); for (let k = 1; k <= 4; k++) tick(last + 250);   // ~1 s of frames with the menu up
+    if (snap() !== before) throw new Error('state changed while the menu was up');
+    const t0 = performance.now(); $('menuPlay').click(); if (snap() !== before) throw new Error('Play changed the state (e.g. away earnings)');
+    if (last < t0) throw new Error('clock not reset on Play'); tick(last + 100); if (!(game.time > JSON.parse(before).t)) throw new Error('game did not resume');
+    approx(game.time - JSON.parse(before).t, 0.1, 1e-6, 'resumed for exactly one 0.1 s frame');
+  }, g => { g.money = 1000; M.buyStore(g, 'food'); M.buyStore(g, 'coffee'); })));
   window.__mall = { get game() { return game; }, save, core: M, setDrawer, get drawerOpen() { return drawerOpen; }, view, cam, fit, setZoom, resetZoom, worldToScreen, screenToWorld, get cacheK() { return cacheK; }, get cacheSize() { return [off.width, off.height]; }, get zmax() { return ZMAX; } };
   if (location.hash === '#test') showTests();
 })();
