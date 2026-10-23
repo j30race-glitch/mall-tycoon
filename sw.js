@@ -2,7 +2,7 @@
    Precaches the app shell on install, then serves those files cache-first (network fallback for anything else).
    Only the files listed in APP_FILES are ever cached: never index.txt, the index.v*.html / *.bak backups or other pages.
    Bump CACHE_VERSION whenever index.html, manifest.json or the icons change so players get the new version. */
-const CACHE_VERSION = 'mall-tycoon-v8';
+const CACHE_VERSION = 'mall-tycoon-v9';
 const APP_FILES = [
   './',
   './index.html',

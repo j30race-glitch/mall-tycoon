@@ -549,7 +549,7 @@ const MallCore = (() => {
       incomeLog: [], events: [], loadedIpm: 0,
     };
   }
-  function makeStore(game, type, slot) { const pm = game.prestige || 0; return { id: game.nextId++, type, slot, cogs: 0, service: 0, capacity: 0, earned: 0, sales: 0, pm }; }
+  function makeStore(game, type, slot) { const pm = game.prestige || 0; return { id: game.nextId++, type, slot, cogs: 0, service: 0, capacity: 0, earned: 0, sales: 0, pm, spent: 0 }; }
 
   /* ---------- shoppers ----------
      walking (hall) → queue (outside the door when the store is full) → entering (walk to a fixture) → browse
@@ -799,9 +799,15 @@ const MallCore = (() => {
     game.money -= cost; const st = makeStore(game, type, target.key); st.paid = cost; game.stores.push(st); dailyBump(game, 'open', 1); if (TYPES[type].tier >= 2) dailyBump(game, 'opentier', 1);
     return { ok: true, cost, store: st };
   }
-  // selling a store: half of what was paid to open it (upgrade spend is not refunded); stores from saves before the price was kept: half the base catalog cost
+  // selling a store refunds SELL_REFUND (half) of everything put into it: the price paid to open it + every store upgrade bought for it.
+  // opening price: kept as st.paid; stores from saves before that was kept: the base catalog cost at the store's prestige (never more than was paid)
   const paidFor = st => num(st.paid) ?? Math.floor(TYPES[st.type].cost * costMult(st.pm || 0));
-  const sellValue = st => Math.floor(paidFor(st) * SELL_REFUND);
+  // upgrade spend rebuilt from levels: the same cost formula, charged at each level from 0 up to the current one (free registers cost nothing, so add nothing)
+  const upgSpendFromLevels = st => SU_KEYS.reduce((sum, k) => { let n = 0; for (let l = 0; l < (st[k] || 0); l++) n += storeUpgradeCost({ ...st, [k]: l }, k); return sum + n; }, 0);
+  // upgrade spend: tracked per store as st.spent (exact amounts charged); stores from saves before it was tracked: rebuilt from their levels
+  const upgSpent = st => num(st.spent) ?? upgSpendFromLevels(st);
+  const investedIn = st => paidFor(st) + upgSpent(st);
+  const sellValue = st => Math.floor(investedIn(st) * SELL_REFUND);
   function sellStore(game, id) {
     const i = game.stores.findIndex(s => s.id === id); if (i < 0) return fail('unknown');
     const st = game.stores[i], refund = sellValue(st), door = slotOf(game, st).door;
@@ -816,7 +822,7 @@ const MallCore = (() => {
     const st = game.stores.find(s => s.id === id), u = STORE_UPGRADES[key]; if (!st || !u) return fail('unknown');
     if (suMaxed(st, key)) return fail('max');
     const cost = storeUpgradeCost(st, key); if (game.money < cost) return fail('funds');
-    game.money -= cost; st[key]++; dailyBump(game, 'upgrades', 1); return { ok: true, cost };
+    game.money -= cost; st.spent = upgSpent(st) + cost; st[key]++; dailyBump(game, 'upgrades', 1); return { ok: true, cost };
   }
   function canExpand(game) {
     if (game.level >= MAX_LEVEL) return fail('max');
@@ -931,7 +937,7 @@ const MallCore = (() => {
   }
   function serialize(game, now) {
     return { v: SAVE_VERSION, savedAt: now, money: game.money, lifetime: game.lifetime, level: game.level, upgrades: { ...game.upgrades },
-      stores: game.stores.map(s => ({ type: s.type, slot: s.slot, cogs: s.cogs, service: s.service, capacity: s.capacity, earned: s.earned, sales: s.sales, pm: s.pm, paid: s.paid })),
+      stores: game.stores.map(s => ({ type: s.type, slot: s.slot, cogs: s.cogs, service: s.service, capacity: s.capacity, earned: s.earned, sales: s.sales, pm: s.pm, paid: s.paid, spent: s.spent })),
       prestige: game.prestige, stars: game.stars, starsTotal: game.starsTotal, perks: { ...game.perks }, allTime: game.allTime,   // optional v4 fields (older saves: 0)
       daily: game.daily ? JSON.parse(JSON.stringify(game.daily)) : null,
       stats: { ...game.stats }, ipm: incomePerMin(game), rng: game.rng,
@@ -982,7 +988,7 @@ const MallCore = (() => {
     function addSaved(s, slot) {
       const st = makeStore(g, s.type, slot);
       for (const k of SU_KEYS) st[k] = Math.min(STORE_UPGRADES[k].max, Math.floor(num(s[k]) ?? 0));
-      st.pm = Math.floor(num(s.pm) ?? g.prestige); st.earned = num(s.earned) ?? 0; st.sales = Math.floor(num(s.sales) ?? 0); if (num(s.paid) != null) st.paid = s.paid;
+      st.pm = Math.floor(num(s.pm) ?? g.prestige); st.earned = num(s.earned) ?? 0; st.sales = Math.floor(num(s.sales) ?? 0); if (num(s.paid) != null) st.paid = s.paid; st.spent = num(s.spent) ?? upgSpendFromLevels(st);
       g.stores.push(st);
     }
     if (data.stats) for (const k of Object.keys(g.stats)) g.stats[k] = num(data.stats[k]) ?? 0;
@@ -992,7 +998,7 @@ const MallCore = (() => {
     return { game: g, offline: { amount: off, elapsedMs: Math.min(elapsed, cap), capped: elapsed > cap } };
   }
 
-  return { sellStore, sellValue, paidFor, SELL_REFUND,
+  return { sellStore, sellValue, paidFor, upgSpent, upgSpendFromLevels, investedIn, SELL_REFUND,
     PRESTIGE_LEVEL, PRESTIGE_STORES, PRESTIGE_EARN, PRESTIGE_COST, STAR_K, START_CASH, earnMult, costMult, PERKS, PERK_KEYS, perkCost, perk, msAt, lockAt, msScale, tierOpen, prestigeCheck, prestigeStars, doPrestige, startCash, buyPerk,
     DAILY_MIN, DAILY_BOOST, nice, dayKeyOf, refIncome, goalText, makeDaily, ensureDaily, dailyBump, goalDone, claimGoal, bonusReady, claimBonus, claimableCount, offlineCap, incomeBoost,
     TIER_MILESTONE, unlockNeed, tiersOpen, milestoneOk, famLockOk, TYPES, TYPE_KEYS, CATALOG_KEYS, ALL_TYPE_KEYS, FAMILIES, FAM_KEYS, familyOf, famUnlocked, levelUp, DEV_CODE_SPACES, UPGRADES, STORE_UPGRADES, SU_KEYS, LEVELS, MAX_LEVEL, SAVE_VERSION, OFFLINE_CAP_MS, PATIENCE, SEP_MAX, OUT,
@@ -1305,18 +1311,68 @@ const MallTests = (() => {
       assert(runUntil(g, () => g.shoppers.length === 0, 300), `L${level}: everyone left: ${g.shoppers.length} still inside`);
     }
   });
-  test('sell a store: refunds half of what it cost to open (upgrade spend not refunded) — a refund, not income, sales or daily-goal progress', () => {
+  test('sell a store: refunds half of what was put into it (opening price + upgrade spend) — a refund, not income, sales or daily-goal progress', () => {
     const g = rich(); M.ensureDaily(g, Date.now());
     const a = M.buyStore(g, 'food'), b = M.buyStore(g, 'coffee'); eq(a.cost, 100); eq(b.cost, 87, '60 × 1.45 (one space already open)');
-    eq(a.store.paid, 100); eq(b.store.paid, 87); eq(M.sellValue(a.store), 50); eq(M.sellValue(b.store), 43, 'floor(87 / 2)');
-    M.buyStoreUpgrade(g, b.store.id, 'cogs'); M.buyStoreUpgrade(g, b.store.id, 'capacity'); eq(M.sellValue(b.store), 43, 'upgrades do not change the refund');
+    eq(a.store.paid, 100); eq(b.store.paid, 87); eq(a.store.spent, 0); eq(M.sellValue(a.store), 50); eq(M.sellValue(b.store), 43, 'floor(87 / 2)');
+    eq(M.buyStoreUpgrade(g, b.store.id, 'cogs').cost, 36); eq(M.buyStoreUpgrade(g, b.store.id, 'capacity').cost, 60); eq(b.store.spent, 96, 'upgrade spend tracked'); eq(M.sellValue(b.store), 91, 'floor((87 + 36 + 60) / 2)');
     const m = g.money, life = g.lifetime, log = g.incomeLog.length, sales = g.stats.sales, daily = JSON.stringify(g.daily), ipm = M.incomePerMin(g);
-    const r = M.sellStore(g, b.store.id); assert(r.ok); eq(r.refund, 43); near(g.money, m + 43, 'refund paid');
+    const r = M.sellStore(g, b.store.id); assert(r.ok); eq(r.refund, 91); near(g.money, m + 91, 'refund paid');
     eq(g.lifetime, life, 'not lifetime earnings'); eq(g.incomeLog.length, log, 'not in the income log'); eq(g.stats.sales, sales, 'not a sale'); eq(JSON.stringify(g.daily), daily, 'no daily-goal progress'); near(M.incomePerMin(g), ipm, 'income rate unchanged');
     eq(M.sellStore(g, b.store.id).reason, 'unknown', 'cannot sell twice');
     // prestige pricing: what was paid at prestige 2; a store from an older save without a price: half the base catalog cost at its prestige
     const p = quiet(); p.prestige = 2; p.money = 1e12; p.lifetime = 1e12; const d = M.buyStore(p, 'designer'); eq(M.sellValue(d.store), Math.floor(d.cost / 2));
     const old = { ...d.store }; delete old.paid; eq(M.sellValue(old), Math.floor(Math.floor(3750 * M.costMult(2)) / 2));
+    let up = 0; for (const k of ['cogs', 'service', 'service']) up += M.buyStoreUpgrade(p, d.store.id, k).cost; eq(d.store.spent, up, 'prestige-priced upgrades tracked at what was charged');
+    eq(M.sellValue(d.store), Math.floor((d.cost + up) / 2));
+  });
+  // greedy upgrade path: always the cheapest upgrade not yet maxed, until the store is fully maxed (or a level target is reached)
+  const upTo = (g, st, lvl = Infinity) => { let spent = 0; for (;;) { if (M.storeLevel(st) >= lvl) break; const ks = M.SU_KEYS.filter(k => !M.suMaxed(st, k)); if (!ks.length) break;
+      const k = ks.sort((a, b) => M.storeUpgradeCost(st, a) - M.storeUpgradeCost(st, b))[0], r = M.buyStoreUpgrade(g, st.id, k); assert(r.ok, 'upgrade ' + k); spent += r.cost; } return spent; };
+  test('sell value: exactly 50% of (opening price + every upgrade charged), grows with each upgrade, up to a fully maxed store; prestige-priced too', () => {
+    for (const [P, type] of [[0, 'food'], [0, 'electronics'], [2, 'coffee'], [3, 'flagship']]) {
+      const g = quiet(); g.prestige = P; g.money = 1e15; g.lifetime = 1e15; g.unlocked = { tiers: true, toys: true, pharmacy: true }; M.buyStore(g, 'books'); const b = M.buyStore(g, type); assert(b.ok, type); const st = b.store;
+      let total = b.cost, prev = M.sellValue(st); eq(prev, Math.floor(total / 2), 'fresh: half the opening price');
+      for (;;) { const ks = M.SU_KEYS.filter(k => !M.suMaxed(st, k)); if (!ks.length) break; const k = ks[(st.cogs + st.service + st.capacity) % ks.length], m = g.money, r = M.buyStoreUpgrade(g, st.id, k);
+        assert(r.ok); eq(m - g.money, r.cost, 'charged = reported'); total += r.cost; eq(st.spent, total - b.cost, 'tracked = sum charged'); const v = M.sellValue(st);
+        eq(v, Math.floor(total / 2), `P${P} ${type} Lv ${M.storeLevel(st)}: half of everything put in`); assert(v > prev, 'every upgrade raises the sell price'); assert(v < total, 'refund below total spent'); prev = v; }
+      assert(M.SU_KEYS.every(k => M.suMaxed(st, k)), 'fully maxed'); eq(st.cogs, 9); eq(st.service, 10); eq(M.capacityOf(st), 6);
+      eq(M.investedIn(st), total); eq(M.upgSpendFromLevels(st), st.spent, 'level-rebuilt spend matches what was charged');
+    }
+  });
+  test('sell value: buying, upgrading and selling never makes money (Lv 1, 5, 10, max), nor does sell-and-rebuy', () => {
+    for (const lvl of [1, 5, 10, Infinity]) for (const P of [0, 2]) {
+      const g = quiet(); g.prestige = P; g.money = 1e15; g.lifetime = 1e15; M.buyStore(g, 'coffee'); const m0 = g.money, b = M.buyStore(g, 'food'); const up = upTo(g, b.store, lvl);
+      if (lvl !== Infinity) eq(M.storeLevel(b.store), lvl); const r = M.sellStore(g, b.store.id); assert(r.ok);
+      eq(r.refund, Math.floor((b.cost + up) / 2)); assert(g.money < m0, `Lv ${lvl} P${P}: lost money (${m0 - g.money})`); near(m0 - g.money, b.cost + up - r.refund, 'net loss = spent − refund');
+    }
+    // sell-and-rebuy (and re-upgrade) cycles: money always stays below where it was before the store was first bought, and each plain cycle costs money
+    const g = quiet(); g.money = 1e15; for (const t of ['food', 'coffee']) M.buyStore(g, t); const m0 = g.money; upTo(g, M.buyStore(g, 'books').store);
+    let fresh = false;   // the store being sold has no upgrades
+    for (let i = 0; i < 6; i++) { const m = g.money, wasFresh = fresh, slot = g.stores[2].slot, r = M.sellStore(g, g.stores[2].id), nb = M.buyStore(g, 'books', slot); assert(r.ok && nb.ok);
+      assert(g.money < m0, `cycle ${i}: still below the money before the first purchase`); eq(M.storeLevel(nb.store), 1, 'rebought store starts at Lv 1'); eq(nb.store.spent, 0);
+      if (wasFresh) assert(g.money < m, `cycle ${i}: selling a fresh store and rebuying it loses money`);
+      fresh = i % 2 === 1; if (!fresh) upTo(g, nb.store, 6 + i); }
+    M.sellStore(g, g.stores[2].id); assert(g.money < m0, 'after the last sale: net loss overall');
+  });
+  test('sell value: old saves without tracked upgrade spend rebuild it from the levels with the game\'s own cost formula (free registers add nothing)', () => {
+    const g = quiet(); g.prestige = 2; g.money = 1e15; g.lifetime = 1e15; g.unlocked = { tiers: true, toys: true, pharmacy: true }; g.level = 3;
+    const a = M.buyStore(g, 'food').store, b = M.buyStore(g, 'designer').store, c = M.buyStore(g, 'coffee').store, d = M.buyStore(g, 'books').store;
+    upTo(g, a); for (const k of ['capacity', 'capacity', 'service', 'cogs', 'capacity']) M.buyStoreUpgrade(g, b.id, k); for (let i = 0; i < 10; i++) M.buyStoreUpgrade(g, c.id, 'service');
+    eq(c.capacity, 0); eq(M.capacityOf(c), 3, 'Lv 11: two free registers'); let sv = 0; for (let l = 0; l < 10; l++) sv += Math.floor(60 * 0.5 * Math.pow(1.55, l) * M.costMult(2)); eq(c.spent, sv, 'only the Service levels were paid for');
+    const data = JSON.parse(JSON.stringify(M.serialize(g, 1000))); for (const s of data.stores) delete s.spent;   // an older save
+    const h = M.deserialize(data, 1000).game;
+    for (const st of [a, b, c, d]) { const o = M.storeAt(h, st.slot); eq(o.spent, st.spent, st.type + ': rebuilt = charged'); eq(M.sellValue(o), M.sellValue(st)); eq(M.upgSpendFromLevels(st), st.spent); }
+    eq(M.storeAt(h, d.slot).spent, 0, 'no upgrades: nothing spent');
+    const o = M.storeAt(h, b.slot), m = h.money, r = M.buyStoreUpgrade(h, o.id, 'service'); assert(r.ok); eq(o.spent, b.spent + r.cost, 'tracking continues from the rebuilt figure'); near(m - h.money, r.cost);
+    const bare = { ...b }; delete bare.spent; delete bare.paid; eq(M.sellValue(bare), Math.floor((Math.floor(3750 * M.costMult(2)) + b.spent) / 2), 'no price and no spend kept: base cost + rebuilt spend');
+  });
+  test('sell value: tracked upgrade spend persists across save and reload (the saved figure is used, not recomputed)', () => {
+    const g = rich(); const a = M.buyStore(g, 'food').store; upTo(g, a, 6); const spent = a.spent; assert(spent > 0);
+    const d1 = JSON.parse(JSON.stringify(M.serialize(g, 1000))); eq(d1.stores[0].spent, spent, 'saved');
+    const h = M.deserialize(d1, 1000).game, o = M.storeAt(h, a.slot); eq(o.spent, spent); eq(M.sellValue(o), M.sellValue(a));
+    d1.stores[0].spent = spent + 1000; eq(M.storeAt(M.deserialize(d1, 1000).game, a.slot).spent, spent + 1000, 'tracked figure read back as saved');
+    M.buyStoreUpgrade(h, o.id, 'cogs'); const h2 = M.deserialize(JSON.parse(JSON.stringify(M.serialize(h, 2000))), 2000).game; eq(M.storeAt(h2, a.slot).spent, o.spent, 'second round trip');
   });
   test('sell a store: its space is FOR LEASE again and re-leasable; opening cost, prestige and Expand Mall checks follow', () => {
     const g = rich(); g.level = 10; while (M.freeSlots(g).length) M.buyStore(g, 'food'); const n = g.stores.length; assert(M.prestigeCheck(g).ok, 'full level-10 mall');
@@ -1350,7 +1406,7 @@ const MallTests = (() => {
     const g = rich(); const a = M.buyStore(g, 'food').store, b = M.buyStore(g, 'coffee').store, c = M.buyStore(g, 'food').store; M.sellStore(g, a.id);
     const d = M.deserialize(JSON.parse(JSON.stringify(M.serialize(g, 1000))), 1000).game;
     eq(d.stores.length, 2); eq(M.storeAt(d, a.slot), null, 'sold space still empty'); assert(M.freeSlots(d).some(f => f.key === a.slot));
-    eq(d.stores.map(s => s.type).join(), 'coffee,food'); eq(M.sellValue(M.storeAt(d, b.slot)), M.sellValue(b), 'refund kept'); eq(M.sellValue(M.storeAt(d, c.slot)), M.sellValue(c)); near(d.money, g.money);
+    eq(d.stores.map(s => s.type).join(), 'coffee,food'); eq(M.storeAt(d, b.slot).spent, b.spent); eq(M.sellValue(M.storeAt(d, b.slot)), M.sellValue(b), 'refund kept'); eq(M.sellValue(M.storeAt(d, c.slot)), M.sellValue(c)); near(d.money, g.money);
     const r = M.buyStore(d, 'books', a.slot); assert(r.ok, 're-lease after reload');
   });
   test('fixtures are solid: 0 shopper bodies inside any fixture or hall decor footprint in busy malls (every store type, levels 1–' + M.MAX_LEVEL + ')', () => {
@@ -2939,13 +2995,15 @@ const MallTests = (() => {
     game.money = 1e4; const key = M.layoutOf(game).slots[1].key; const r0 = M.buyStore(game, 'food', key); M.buyStore(game, 'coffee');
     selected = key; refreshCard(); const C = $('card'), sell = () => C.querySelector('[data-cact="sell"]');
     if (!sell() || !sell().textContent.includes('Sell for ' + fmt(r0.cost / 2))) throw new Error('sell button: ' + (sell() && sell().textContent));
+    M.buyStoreUpgrade(game, r0.store.id, 'cogs'); M.buyStoreUpgrade(game, r0.store.id, 'service'); refreshCard(); const v = M.sellValue(r0.store);
+    if (v !== Math.floor((r0.cost + r0.store.spent) / 2) || v <= r0.cost / 2 || !sell().textContent.includes('Sell for ' + fmt(v) + '?')) throw new Error('upgraded sell button: ' + sell().textContent);
     sell().click(); if (!M.storeAt(game, key)) throw new Error('one tap must not sell');
-    const ok = C.querySelector('[data-cact="sellok"]'), no = C.querySelector('[data-cact="sellno"]'); if (!ok || !no || !ok.textContent.includes('Confirm') || !ok.textContent.includes(fmt(r0.cost / 2))) throw new Error('confirm not shown');
+    const ok = C.querySelector('[data-cact="sellok"]'), no = C.querySelector('[data-cact="sellno"]'); if (!ok || !no || !ok.textContent.includes('Confirm') || !ok.textContent.includes(fmt(v))) throw new Error('confirm not shown');
     no.click(); if (!sell() || C.querySelector('[data-cact="sellok"]') || !M.storeAt(game, key)) throw new Error('cancel');
     selected = M.layoutOf(game).slots[0].key; refreshCard(); selected = key; refreshCard(); sell().click(); selected = M.layoutOf(game).slots[0].key; refreshCard(); selected = key; refreshCard();
     if (C.querySelector('[data-cact="sellok"]')) throw new Error('confirm must not survive switching stores');
     const m = game.money; sell().click(); C.querySelector('[data-cact="sellok"]').click();
-    if (M.storeAt(game, key)) throw new Error('not sold'); approx(game.money, m + 50, 1e-9, 'refund'); if (game.lifetime !== 0) throw new Error('refund counted as earnings');
+    if (M.storeAt(game, key)) throw new Error('not sold'); approx(game.money, m + v, 1e-9, 'refund'); if (game.lifetime !== 0) throw new Error('refund counted as earnings');
     if (!C.textContent.includes('Space for lease') || !C.querySelector('[data-cact="shop"]')) throw new Error('card should offer the empty space');
     setDrawer(true); refreshPanel(); if ($('drawerBody').querySelector('[data-own="food"]').dataset.n !== '0') throw new Error('owned count after sell');
     const r = doAction('store', { k: 'books' }); if (!r.ok || r.store.slot !== key) throw new Error('re-lease the sold space');
