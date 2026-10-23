@@ -645,7 +645,8 @@ const MallCore = (() => {
     const used = new Set(game.shoppers.filter(o => o.inStore === store.id && o.till != null).map(o => o.till));
     let i = 0; while (used.has(i)) i++;
     const sl = slotOf(game, store), p = sl.tills[i];
-    s.till = i; s.spot = null; s.state = 'toTill'; routeTo(game, s, Math.round(p.x), Math.round(p.y), p, 'till');
+    s.till = i; s.spot = null; s.inLane = false; s.state = 'toTill'; routeTo(game, s, Math.round(p.x), Math.round(p.y), p, 'till');
+    const q = s.path[0]; if (s.path.length >= 2 && q.x === Math.round(s.x) && q.y === Math.round(s.y)) s.path.shift();   // from the front spot step straight through the rope opening, never back into the line
   }
   const waitingLine = (game, store) => game.shoppers.filter(o => o.inStore === store.id && o.state === 'waitTill').sort((a, b) => a.waitT - b.waitT || a.id - b.id);
   // waited too long in a checkout line: drop that want, walk out (annoyed) and try the rest of the list
@@ -742,19 +743,19 @@ const MallCore = (() => {
         const q = queueSpot(game, s, store); s.path = [q]; s.v = Math.min(s.v, 0.5); step(s, speed * 0.6, dt);
       }
       else if (s.state === 'entering') { s.enterTime += dt; if (step(s, speed * 0.8, dt)) { s.state = 'browse'; s.timer = BROWSE_T; } }
-      else if (s.state === 'browse') {   // done browsing: straight to a free register only if nobody is already waiting (no cutting the line)
+      else if (s.state === 'browse') {   // done browsing: everyone joins the checkout line (even an empty one) and reaches a register only from its front
         s.timer -= dt;
-        if (s.timer <= 0) { if (!waitingLine(game, st).length && tillsBusy(game, st) < capacityOf(st)) goToTill(game, s, st); else { s.state = 'waitTill'; s.waitT = game.time; s.qi = -1; s.spot = null; s.linePatience = s.linePatience0 = LINE_PATIENCE * (1 + rand(game)); } }
+        if (s.timer <= 0) { s.state = 'waitTill'; s.waitT = game.time; s.qi = -1; s.inLane = false; s.spot = null; s.linePatience = s.linePatience0 = LINE_PATIENCE * (1 + rand(game)); }
       }
-      else if (s.state === 'waitTill') {
-        const line = waitingLine(game, st), i = line.indexOf(s);
-        if (i === 0 && tillsBusy(game, st) < capacityOf(st)) { goToTill(game, s, st); continue; }
-        if (s.qi !== i) { s.qi = i; const sl = slotOf(game, st), p = sl.queue[i];   // past the last line spot: wait where you stand (no stacking) until a spot frees up
-          const L = layoutOf(game), t = tileOf(s, L, game);
-          if (!p) s.path = [];
-          else if (L.zone[t.y * L.W + t.x] === 1) s.path = [p];   // already in the lane: shuffle straight forward along it
-          else routeTo(game, s, Math.round(p.x), Math.round(p.y), p, 'line'); }   // join at the tail
-        step(s, speed * 0.6, dt);
+      else if (s.state === 'waitTill') {   // the checkout line: in at the lane's tail, forward spot by spot, a register only from the front spot
+        const line = waitingLine(game, st), i = line.indexOf(s), sl = slotOf(game, st), Q = sl.queue, p = Q[i], L = layoutOf(game), t = tileOf(s, L, game);
+        if (!s.inLane && L.zone[t.y * L.W + t.x] === 1) s.inLane = true;
+        if (i === 0 && s.inLane && !s.path.length && Math.hypot(s.x - Q[0].x, s.y - Q[0].y) < 0.05 && tillsBusy(game, st) < capacityOf(st)) { goToTill(game, s, st); continue; }
+        if (s.inLane) { if (s.qi !== i) { s.qi = i; s.path = p ? [p] : []; } }   // in the lane: shuffle straight forward along it
+        else if (!p || (i > 0 && !line[i - 1].inLane)) { s.qi = -1; s.path = []; }   // lane full, or the shopper ahead hasn't reached the lane yet: wait where you stand (no stacking, no passing)
+        else if (s.qi !== i) { s.qi = i; const tail = Q[Q.length - 1]; routeTo(game, s, Math.round(tail.x), Math.round(tail.y), tail, 'line');   // walk in at the tail…
+          for (let k = Q.length - 2; k >= i; k--) s.path.push(Q[k]); }   // …then forward spot by spot to your own
+        step(s, speed * (s.inLane && s.path.length <= 1 ? 0.6 : 0.8), dt);
       }
       else if (s.state === 'realize') { s.timer -= dt; if (s.timer <= 0) startLeaving(game, s, leaveOutcome(s)); }
       else if (s.state === 'toTill') { if (step(s, speed * 0.8, dt)) { s.state = 'service'; s.timer = serviceTime(st); } }
@@ -1239,6 +1240,51 @@ const MallTests = (() => {
     const L1 = WL(g, st); L1.forEach((s, i) => { near(s.x, sl.queue[i].x, 'spot ' + i, 0.02); near(s.y, sl.queue[i].y, 'spot ' + i, 0.02); });
     blocker.timer = 0; const order = []; assert(runUntil(g, () => { for (const s of sh) if (s.state === 'toTill' && !order.includes(s)) order.push(s); return order.length === 6; }, 200), 'all reach the register');
     eq(order.map(s => s.id).join(), L1.map(s => s.id).join(), 'served in line order');
+  });
+  // every frame: who left the line for a register, and from where (first lane tile entered, front spot reached), plus FIFO per store
+  function laneWatch(g, L) { const k = new Map(), out = { served: 0, viaTail: 0, viaFront: 0, fromFront: 0, fifoBad: 0, freeAtJoin: 0, joinToReg: [] }, last = new Map();
+    return { out, tick() { const prev = new Map(g.shoppers.map(s => [s.id, s.state])); M.update(g, 0.05);
+      for (const s of g.shoppers) { const ps = prev.get(s.id), st = s.inStore != null ? g.stores.find(o => o.id === s.inStore) : null; if (!st) continue;
+        const sl = M.slotByKey(L, st.slot), Q = sl.queue; let r = k.get(s.id); if (!r) k.set(s.id, r = {});
+        if (ps === 'browse' && s.state === 'waitTill') { Object.assign(r, { lane: null, front: false, waitT: s.waitT, t0: g.time }); if (M.tillsBusy(g, st) < M.capacityOf(st)) { r.free = true; out.freeAtJoin++; } }
+        if (s.state === 'waitTill') { const p = M.toLocal(sl, s.x + 0.5, s.y + 0.5), u = Math.floor(p.lx), v = Math.floor(p.ly);
+          if (r.lane == null && u === 3 && v >= 3 && v <= 7) r.lane = v; if (Math.hypot(s.x - Q[0].x, s.y - Q[0].y) < 0.05) r.front = true; }
+        if (ps === 'waitTill' && s.state === 'toTill') { out.served++; if (r.lane === 3) out.viaTail++; if (r.front) out.viaFront++; if (r.front) out.fromFront++; if (r.free) out.joinToReg.push(g.time - r.t0);
+          const lw = last.get(st.id); if (lw != null && r.waitT < lw) out.fifoBad++; last.set(st.id, r.waitT); r.free = false; }
+        if (ps !== 'toTill' && s.state === 'toTill' && ps !== 'waitTill') out.served++;   // reached a register any other way: counted, never via the lane
+      } } }; }
+  test('checkout lane: 100% of served shoppers walk the lane — in at the tail, up to the front spot, then a register — even with the line empty and registers free', () => {
+    // empty line, 3 free registers: still in at the tail, up the lane to the front, then the register — brisk, no waiting
+    const g = withStores(['coffee']), st = g.stores[0], L = M.layoutOf(g); st.capacity = 2; const w = laneWatch(g, L);
+    for (let i = 0; i < 4; i++) { M.spawnShopper(g, ['coffee'], 50); for (let t = 0; t < 25; t += 0.05) w.tick(); }
+    eq(w.out.served, 4, 'served one by one'); eq(w.out.freeAtJoin, 4, 'a register was free every time someone finished browsing');
+    eq(w.out.viaTail, 4, 'entered the lane at its tail'); eq(w.out.viaFront, 4, 'reached the front spot before the register');
+    assert(Math.max(...w.out.joinToReg) < 8, 'brisk walk through the empty lane: ' + w.out.joinToReg.map(x => x.toFixed(1)).join(', ') + ' s');
+    // busy malls with normal traffic, 1–6 registers
+    for (const [level, regs, seed] of [[1, 1, 41], [3, 3, 42], [10, 6, 43], [M.MAX_LEVEL, 2, 44]]) {
+      const g2 = busyMall(level, regs, seed), w2 = laneWatch(g2, M.layoutOf(g2)); for (let t = 0; t < 150; t += 0.05) w2.tick();
+      const o = w2.out; assert(o.served > 60, `L${level}: served ${o.served}`); if (regs > 1) assert(o.freeAtJoin > 20, `L${level}: often a free register at join: ${o.freeAtJoin}`);
+      eq(o.viaTail, o.served, `L${level} ${regs} regs: in at the tail`); eq(o.viaFront, o.served, `L${level} ${regs} regs: through the front spot`);
+    }
+  });
+  test('checkout lane: FIFO — registers go in the order shoppers finished browsing, only from the front spot, in busy and quiet stores', () => {
+    let served = 0;
+    for (const [level, regs, seed, spawn] of [[1, 1, 51, 12], [3, 6, 52, 12], [5, 3, 53, 0], [M.MAX_LEVEL, 6, 54, 12]]) {
+      const g = busyMall(level, regs, seed); g.upgrades.spawn = spawn; const w = laneWatch(g, M.layoutOf(g)); for (let t = 0; t < 150; t += 0.05) w.tick();
+      eq(w.out.fifoBad, 0, `L${level}: someone reached a register ahead of an earlier shopper`); eq(w.out.fromFront, w.out.served, `L${level}: left for a register from the front spot`); served += w.out.served;
+    }
+    assert(served > 300, 'served: ' + served);
+  });
+  test('checkout lane: nobody stuck walking through the lane — normal traffic at levels 1, 5 and 14, then everyone leaves', () => {
+    for (const [level, regs, seed] of [[1, 1, 61], [5, 6, 62], [M.MAX_LEVEL, 3, 63]]) {
+      const g = busyMall(level, regs, seed), last = new Map(); let stuck = 0, inLane = 0;
+      for (let t = 0; t < 260; t += 0.05) { if (t >= 140) g.autoSpawn = false; M.update(g, 0.05);
+        for (const s of g.shoppers) { if (s.inLane) inLane++; const moving = ['walking', 'entering', 'toTill', 'exiting', 'leaving'].includes(s.state) || (s.state === 'waitTill' && s.path.length > 0), l = last.get(s.id);
+          if (!l || !moving || l.state !== s.state || Math.hypot(l.x - s.x, l.y - s.y) > 0.01) last.set(s.id, { x: s.x, y: s.y, t: g.time, state: s.state }); else if (g.time - l.t > 3 && !l.flag) { l.flag = 1; stuck++; } }
+        if (t > 140 && !g.shoppers.length) break; }
+      eq(stuck, 0, `L${level}: frozen for 3 s while meant to be moving`); assert(inLane > 1000, `L${level}: shoppers stood in the lane (${inLane} shopper-frames)`);
+      assert(runUntil(g, () => g.shoppers.length === 0, 300), `L${level}: everyone left: ${g.shoppers.length} still inside`);
+    }
   });
   test('fixtures are solid: 0 shopper bodies inside any fixture or hall decor footprint in busy malls (every store type, levels 1–' + M.MAX_LEVEL + ')', () => {
     const hits = {}; let n = 0; const types = new Set();
